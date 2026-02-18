@@ -17,9 +17,9 @@
 //! # Feature Flags
 //!
 //! - `toc` — enables `DiscTOC`, `TrackInfo`, MusicBrainz DiscID, and FreeDB ID
-//!            calculation (requires `sha1` and `base64`).
+//!   calculation (requires `sha1` and `base64`).
 //! - `drives` — enables `list_drives()` for enumerating physical optical drives
-//!              on Linux, macOS, and Windows.
+//!   on Linux, macOS, and Windows.
 //!
 //! # Quick Example
 //!
