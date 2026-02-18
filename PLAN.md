@@ -213,42 +213,44 @@ label; `PrimaryVolumeDescriptor::read_from(&mut reader)` works on any ISO file.
 
 ---
 
-### Phase 3 — BIN/CUE Sector Reader
+### Phase 3 — BIN/CUE Sector Reader ✅
 **Goal:** Read sectors from a `.bin` file using a `.cue` sheet; support both raw
 2352-byte and cooked 2048-byte tracks; generate a single-BIN CUE output.
 Ported from `ODE/src/disc/bincue.rs` and `ODE/src/disc/browse/reader.rs`
 (BinCueSectorReader).
 
-- [ ] **3.1** `src/bincue.rs` — CUE parsing
+- [x] **3.1** `src/bincue.rs` — CUE parsing
   - Use `cue_sheet` crate to parse the CUE text
   - Extract per-track info: track number, track type, sector size, data offset,
     BIN filename, INDEX 01 position
   - `normalize_cue_keywords()` — fix case/compatibility quirks in the cue_sheet crate
-  - `parse_tracks()` — returns `Vec<BinTrack>`
+  - `parse_cue_tracks()` — returns `Vec<BinTrack>`
 
-- [ ] **3.2** `src/bincue.rs` — `BinTrack` struct
+- [x] **3.2** `src/bincue.rs` — `BinTrack` struct
   - `track_no`, `track_type` (`TrackType` enum: `Audio`, `Mode1Raw`, `Mode1Cooked`,
     `Mode2Form1`, `Mode2Form2`)
-  - `sector_size` (2352 or 2048), `data_offset` (16 for Mode1Raw, 0 for cooked)
-  - `bin_path`, `frame_start` (from INDEX 01 MSF)
+  - `sector_size()`, `data_offset()` methods on `TrackType`
+  - `bin_path`, `file_byte_offset` (INDEX 01 frames × sector_size)
 
-- [ ] **3.3** `src/bincue.rs` — single-BIN writer
-  - `write_single_bin_cue(tracks: &[BinTrack], output_bin: &Path, output_cue: &Path)`
+- [x] **3.3** `src/bincue.rs` — single-BIN writer
+  - `write_single_bin_cue(tracks, out_bin, out_cue, out_bin_name)`
   - Concatenates multiple BIN files into one, rewrites CUE FILE references
-  - Output CUE uses `MODE1/2352` for raw data tracks
+  - Recalculates INDEX 01 positions from running frame count
 
-- [ ] **3.4** `src/sector_reader.rs` — `BinCueSectorReader`
-  - Takes `bin_path` + parsed `BinTrack` for the data track
-  - Translates logical sector LBA → physical byte offset in BIN
-    - Raw: `physical = frame_start * 2352 + data_offset + (lba * 2352)`
-    - Cooked: `physical = frame_start * 2048 + (lba * 2048)`
+- [x] **3.4** `src/sector_reader.rs` — `BinCueSectorReader`
+  - Takes a `&BinTrack` for the data track
+  - `physical = file_byte_offset + lba * physical_sector_size + data_offset`
   - Strips header bytes transparently; caller always sees 2048-byte cooked sectors
 
-- [ ] **3.5** Tests: read PVD from a known `.bin`/`.cue` fixture
-  - If ODE has BIN/CUE test fixtures, copy the smallest one
+- [x] **3.5** Tests: programmatic BIN/CUE fixture (no external tools needed)
+  - `write_test_bincue()` helper in integration tests builds a minimal Mode1/2352 image
+  - 8 unit tests in `bincue.rs` (MSF, TrackType, parse, write roundtrip)
+  - 2 new integration tests (`bincue_sector_reader_reads_pvd`, `disc_image_info_open_bincue`)
+  - 39 total tests passing; `cargo clippy` and `cargo fmt --check` clean
 
 **Deliverable:** `BinCueSectorReader` presents a `.bin` file as a transparent cooked
-sector stream, identical in interface to `IsoSectorReader`.
+sector stream, identical in interface to `IsoSectorReader`. `DiscImageInfo::open()`
+now works for `.cue` files.
 
 ---
 

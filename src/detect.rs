@@ -11,10 +11,11 @@
 
 use std::path::{Path, PathBuf};
 
+use crate::bincue::parse_cue_tracks;
 use crate::error::{OpticaldiscsError, Result};
 use crate::formats::{DiscFormat, FilesystemType};
 use crate::iso9660::PrimaryVolumeDescriptor;
-use crate::sector_reader::{IsoSectorReader, SectorReader, SECTOR_SIZE};
+use crate::sector_reader::{BinCueSectorReader, IsoSectorReader, SectorReader, SECTOR_SIZE};
 
 /// All available information about a disc image, obtained without full parsing.
 ///
@@ -57,9 +58,7 @@ impl DiscImageInfo {
 
         match format {
             DiscFormat::Iso => Self::probe_iso(path),
-            DiscFormat::BinCue => Err(OpticaldiscsError::UnsupportedFormat(
-                "BIN/CUE support coming in Phase 3".into(),
-            )),
+            DiscFormat::BinCue => Self::probe_bincue(path),
             DiscFormat::Chd => Err(OpticaldiscsError::UnsupportedFormat(
                 "CHD support coming in Phase 4".into(),
             )),
@@ -67,6 +66,53 @@ impl DiscImageInfo {
                 "MDS/MDF is not supported".into(),
             )),
         }
+    }
+
+    /// Probe a `.cue` (or `.bin`) BIN/CUE image.
+    ///
+    /// When `path` points to a `.bin`, looks for a matching `.cue` in the same
+    /// directory.  The CUE is parsed, the first data track is located, and the
+    /// filesystem is probed through `BinCueSectorReader`.
+    fn probe_bincue(path: &Path) -> Result<Self> {
+        // Resolve the CUE path: accept either .cue or .bin as the entry point.
+        let cue_path = if path
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(str::to_ascii_lowercase)
+            == Some("bin".into())
+        {
+            // Try <stem>.cue next to the BIN
+            let stem = path.file_stem().unwrap_or_default();
+            let cue = path.with_file_name(format!("{}.cue", stem.to_string_lossy()));
+            if cue.exists() {
+                cue
+            } else {
+                return Err(OpticaldiscsError::NotFound(format!(
+                    "no matching .cue found for {}",
+                    path.display()
+                )));
+            }
+        } else {
+            path.to_path_buf()
+        };
+
+        let tracks = parse_cue_tracks(&cue_path)?;
+        let data_track = tracks
+            .into_iter()
+            .find(|t| t.is_data())
+            .ok_or(OpticaldiscsError::NoDataTrack)?;
+
+        let mut reader = BinCueSectorReader::open(&data_track)?;
+        let (filesystem, pvd) = probe_filesystem(&mut reader)?;
+        let volume_label = pvd.as_ref().map(|p| p.volume_id.clone());
+
+        Ok(Self {
+            path: path.to_path_buf(),
+            format: DiscFormat::BinCue,
+            filesystem,
+            volume_label,
+            pvd,
+        })
     }
 
     /// Probe a plain `.iso` file.

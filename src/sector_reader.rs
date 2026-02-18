@@ -99,7 +99,60 @@ impl SectorReader for IsoSectorReader {
 }
 
 // ── Phase 3: BinCueSectorReader ──────────────────────────────────────────────
-// TODO: implement in Phase 3
+
+/// `SectorReader` for BIN/CUE disc images.
+///
+/// Reads a single data track from a raw `.bin` file, translating logical
+/// 2048-byte sector addresses to physical byte offsets in the file, stripping
+/// raw sector headers (sync + header bytes) transparently.
+///
+/// Create one via [`BinCueSectorReader::open`] by passing the data track from
+/// [`crate::bincue::parse_cue_tracks`].
+pub struct BinCueSectorReader {
+    file: BufReader<File>,
+    /// Byte offset in the BIN file where this track's sectors start.
+    file_byte_offset: u64,
+    /// Physical bytes per sector in the BIN file (2352, 2048, or 2336).
+    physical_sector_size: u64,
+    /// Byte offset within each physical sector to the start of user data.
+    data_offset: u64,
+}
+
+impl BinCueSectorReader {
+    /// Open a BIN/CUE data track for reading.
+    ///
+    /// `track` should be a data track. Use
+    /// `parse_cue_tracks(cue_path)?.into_iter().find(|t| t.is_data())`
+    /// to obtain one.
+    pub fn open(track: &crate::bincue::BinTrack) -> Result<Self> {
+        let file = File::open(&track.bin_path).map_err(OpticaldiscsError::Io)?;
+        Ok(Self {
+            file: BufReader::new(file),
+            file_byte_offset: track.file_byte_offset,
+            physical_sector_size: track.sector_size(),
+            data_offset: track.data_offset(),
+        })
+    }
+}
+
+impl SectorReader for BinCueSectorReader {
+    /// Read a 2048-byte cooked sector at `lba`.
+    ///
+    /// Physical layout per sector:
+    /// `file_byte_offset + lba * physical_sector_size + data_offset`
+    fn read_sector(&mut self, lba: u64) -> Result<Vec<u8>> {
+        let physical_offset =
+            self.file_byte_offset + lba * self.physical_sector_size + self.data_offset;
+        self.file
+            .seek(SeekFrom::Start(physical_offset))
+            .map_err(OpticaldiscsError::Io)?;
+        let mut buf = vec![0u8; SECTOR_SIZE as usize];
+        self.file
+            .read_exact(&mut buf)
+            .map_err(OpticaldiscsError::Io)?;
+        Ok(buf)
+    }
+}
 
 // ── Phase 4: ChdSectorReader ─────────────────────────────────────────────────
 // TODO: implement in Phase 4

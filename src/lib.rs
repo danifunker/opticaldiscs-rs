@@ -76,3 +76,6 @@ pub use formats::{supported_extensions, DiscFormat, FilesystemType};
 
 // Phase 2
 pub use sector_reader::SectorReader;
+
+// Phase 3
+pub use sector_reader::BinCueSectorReader;

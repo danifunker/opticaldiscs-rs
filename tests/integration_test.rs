@@ -157,10 +157,76 @@ fn disc_image_info_open_iso() {
 }
 
 // ── Phase 3: BIN/CUE Sector Reader ───────────────────────────────────────────
-// Uncomment when BinCueSectorReader is implemented.
 
-// #[test]
-// fn read_pvd_from_bincue() { ... }
+/// Write a minimal Mode1/2352 BIN + CUE pair containing a valid ISO 9660 PVD.
+///
+/// Layout (raw 2352-byte sectors):
+///   sectors  0-15 : zeros (system area)
+///   sector  16    : Mode1 header (16 bytes) + PVD (2048 bytes) + EDC/ECC zeros
+///   sector  17    : zeros
+#[cfg(test)]
+fn write_test_bincue(
+    volume_label: &str,
+) -> (tempfile::TempDir, std::path::PathBuf, std::path::PathBuf) {
+    use opticaldiscs::iso9660::build_test_pvd_sector;
+    use std::io::Write;
+
+    const RAW: usize = 2352;
+    const SECTORS: usize = 18;
+
+    let dir = tempfile::tempdir().expect("tempdir");
+
+    // Build raw BIN: 18 sectors × 2352 bytes
+    let mut bin = vec![0u8; SECTORS * RAW];
+
+    // Embed the PVD at sector 16: 16-byte Mode1 header + 2048-byte user data
+    let pvd_data = build_test_pvd_sector(volume_label, 18, 2048);
+    let sector16_start = 16 * RAW;
+    // Bytes 0-15: sync/header (zeros OK for testing — reader skips them)
+    bin[sector16_start + 16..sector16_start + 16 + 2048].copy_from_slice(&pvd_data);
+
+    let bin_path = dir.path().join("disc.bin");
+    let cue_path = dir.path().join("disc.cue");
+
+    std::fs::write(&bin_path, &bin).expect("write BIN");
+
+    let cue_content = "FILE \"disc.bin\" BINARY\n  TRACK 01 MODE1/2352\n    INDEX 01 00:00:00\n";
+    let mut f = std::fs::File::create(&cue_path).expect("create CUE");
+    f.write_all(cue_content.as_bytes()).expect("write CUE");
+
+    (dir, bin_path, cue_path)
+}
+
+#[test]
+fn bincue_sector_reader_reads_pvd() {
+    use opticaldiscs::bincue::parse_cue_tracks;
+    use opticaldiscs::iso9660::PrimaryVolumeDescriptor;
+    use opticaldiscs::sector_reader::BinCueSectorReader;
+
+    let (_dir, _bin, cue_path) = write_test_bincue("BINCUE_TEST");
+
+    let tracks = parse_cue_tracks(&cue_path).unwrap();
+    let data_track = tracks.into_iter().find(|t| t.is_data()).unwrap();
+    let mut reader = BinCueSectorReader::open(&data_track).unwrap();
+
+    let pvd = PrimaryVolumeDescriptor::read_from(&mut reader).unwrap();
+    assert_eq!(pvd.volume_id, "BINCUE_TEST");
+    assert_eq!(pvd.logical_block_size, 2048);
+}
+
+#[test]
+fn disc_image_info_open_bincue() {
+    use opticaldiscs::detect::DiscImageInfo;
+    use opticaldiscs::{DiscFormat, FilesystemType};
+
+    let (_dir, _bin, cue_path) = write_test_bincue("DETECT_BINCUE");
+    let info = DiscImageInfo::open(&cue_path).unwrap();
+
+    assert_eq!(info.format, DiscFormat::BinCue);
+    assert_eq!(info.filesystem, FilesystemType::Iso9660);
+    assert_eq!(info.volume_label.as_deref(), Some("DETECT_BINCUE"));
+    assert!(info.pvd.is_some());
+}
 
 // ── Phase 4: CHD Sector Reader ────────────────────────────────────────────────
 // Uncomment when ChdSectorReader is implemented.
