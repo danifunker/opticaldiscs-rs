@@ -1,0 +1,73 @@
+//! `opticaldiscs` — format-agnostic optical disc image reading and browsing.
+//!
+//! # Overview
+//!
+//! This library provides a unified `SectorReader` abstraction that handles the
+//! cooked/raw sector translation across three container formats:
+//!
+//! - **ISO** (`.iso`, `.toast`) — plain 2048-byte cooked sectors
+//! - **BIN/CUE** — raw 2352-byte sectors with per-track header stripping
+//! - **CHD** — MAME Compressed Hunks of Data, optical variant
+//!
+//! On top of `SectorReader`, filesystem browsers are provided for:
+//! - ISO 9660 (data CDs and DVDs)
+//! - HFS (classic Mac CDs)
+//! - HFS+ (Mac OS X CDs/DVDs)
+//!
+//! # Feature Flags
+//!
+//! - `toc` — enables `DiscTOC`, `TrackInfo`, MusicBrainz DiscID, and FreeDB ID
+//!            calculation (requires `sha1` and `base64`).
+//! - `drives` — enables `list_drives()` for enumerating physical optical drives
+//!              on Linux, macOS, and Windows.
+//!
+//! # Quick Example
+//!
+//! ```ignore
+//! use opticaldiscs::detect::DiscImageInfo;
+//! use opticaldiscs::browse;
+//!
+//! let info = DiscImageInfo::open("disc.iso").unwrap();
+//! println!("Volume: {:?}", info.volume_label);
+//!
+//! let mut fs = browse::open_disc_filesystem(&info).unwrap();
+//! let root = fs.root().unwrap();
+//! for entry in fs.list_directory(&root).unwrap() {
+//!     println!("{} ({})", entry.name, entry.size_string());
+//! }
+//! ```
+
+// ── Modules (implemented progressively per PLAN.md) ──────────────────────────
+
+// Phase 1
+pub mod error;
+pub mod formats;
+pub mod browse;
+
+// Phase 2-4
+pub mod sector_reader;
+pub mod iso9660;
+pub mod bincue;
+pub mod chd;
+
+// Phase 5
+#[cfg(feature = "toc")]
+pub mod toc;
+
+// Phase 6
+pub mod detect;
+
+// Phase 7 (HFS metadata — not browsing, see browse/)
+pub mod apm;
+pub mod hfs;
+pub mod hfsplus;
+
+// Phase 9
+#[cfg(feature = "drives")]
+pub mod drives;
+
+// ── Top-level re-exports ──────────────────────────────────────────────────────
+
+pub use error::OpticaldiscsError;
+pub use formats::{DiscFormat, FilesystemType};
+pub use sector_reader::SectorReader;

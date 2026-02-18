@@ -1,0 +1,28 @@
+[package]
+name = "opticaldiscs"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0"
+description = "Format-agnostic optical disc image reading and filesystem browsing (ISO, BIN/CUE, CHD)"
+repository = "https://github.com/dani/opticaldiscs-rs"
+keywords = ["cd-rom", "dvd", "iso9660", "disc-image", "chd"]
+categories = ["filesystem", "encoding", "parser-implementations"]
+
+[features]
+default = []
+toc    = ["dep:sha1", "dep:base64"]   # MusicBrainz + FreeDB DiscID calculation
+drives = []                            # physical optical drive enumeration
+
+[dependencies]
+thiserror = "2"
+log       = "0.4"
+cue_sheet = "0.1"
+chd       = "0.2"
+
+# optional: only needed with feature "toc"
+sha1   = { version = "0.10", optional = true }
+base64 = { version = "0.22", optional = true }
+
+[dev-dependencies]
+tempfile = "3"
+env_logger = "0.11"
