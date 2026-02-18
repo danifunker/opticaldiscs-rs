@@ -176,35 +176,40 @@ Ported from `ODE/src/disc/formats.rs`, `browse/entry.rs`, `browse/filesystem.rs`
 
 ---
 
-### Phase 2 — SectorReader + ISO File Reader
+### Phase 2 — SectorReader + ISO File Reader ✅
 **Goal:** Read cooked 2048-byte sectors from a plain `.iso` file; parse the ISO 9660
 Primary Volume Descriptor. Ported from `ODE/src/disc/browse/reader.rs` (IsoSectorReader)
 and `ODE/src/disc/iso9660.rs`.
 
-- [ ] **2.1** `src/sector_reader.rs` — `SectorReader` trait
+- [x] **2.1** `src/sector_reader.rs` — `SectorReader` trait
   - `read_sector(&mut self, lba: u64) -> Result<Vec<u8>, OpticaldiscsError>`
   - `read_bytes(&mut self, byte_offset: u64, length: usize) -> Result<Vec<u8>, ...>`
-  - Sector size constant: `SECTOR_SIZE: u64 = 2048`
+    (default impl + optimised override in IsoSectorReader)
+  - Constants: `SECTOR_SIZE`, `RAW_SECTOR_SIZE`, `MODE1_DATA_OFFSET`
 
-- [ ] **2.2** `src/sector_reader.rs` — `IsoSectorReader`
-  - Wraps `BufReader<File>`
-  - Sector = direct 2048-byte read at `lba * 2048`
+- [x] **2.2** `src/sector_reader.rs` — `IsoSectorReader`
+  - Wraps `BufReader<File>`, opens via `IsoSectorReader::new(path)`
+  - `read_bytes` overridden with a direct seek+read (avoids sector-at-a-time loop)
 
-- [ ] **2.3** `src/iso9660.rs` — `PrimaryVolumeDescriptor`
-  - Read from sector 16 (offset 32768)
-  - Validate type byte, `CD001` identifier, version
-  - Extract volume_id, system_id, volume_set_id, publisher_id, application_id
-  - `read_from<R: SectorReader>()` constructor
+- [x] **2.3** `src/iso9660.rs` — `PrimaryVolumeDescriptor`
+  - Reads from sector 16 via `SectorReader`; also accepts raw `&[u8]` via `parse()`
+  - Fields: volume_id, system_id, volume_set_id, publisher_id, application_id,
+    volume_space_size, logical_block_size, root_directory_lba, root_directory_size
+  - Validates type byte, `CD001` identifier, version, terminator type
+  - `build_test_pvd_sector()` helper (`#[doc(hidden)]`) for tests
 
-- [ ] **2.4** `src/detect.rs` — `probe_iso_filesystem()` (ISO files only for now)
-  - Tries PVD at sector 16 for ISO9660
-  - Tries HFS signature at offset 1024 for HFS/HFS+
+- [x] **2.4** `src/detect.rs` — `DiscImageInfo::open()` + `probe_filesystem()`
+  - `DiscImageInfo` struct: path, format, filesystem, volume_label, pvd
+  - `probe_filesystem()` probes ISO9660, HFS, HFS+, APM
+  - ISO support only (BIN/CUE + CHD return a clear "coming in Phase N" error)
 
-- [ ] **2.5** Tests: read PVD from a known `.iso` test fixture
-  - Add a small (< 1MB) test ISO to `tests/fixtures/`
+- [x] **2.5** Tests: programmatic ISO fixture (no external tools needed)
+  - `write_test_iso()` helper in integration tests builds a valid minimal ISO
+  - 6 unit tests in `iso9660.rs`, 4 in `detect.rs`, 4 new integration tests
+  - 28 total tests passing
 
-**Deliverable:** `let pvd = PrimaryVolumeDescriptor::read_from(&mut reader)?;` works
-on any `.iso` file.
+**Deliverable:** `DiscImageInfo::open("disc.iso")` returns filesystem type and volume
+label; `PrimaryVolumeDescriptor::read_from(&mut reader)` works on any ISO file.
 
 ---
 
