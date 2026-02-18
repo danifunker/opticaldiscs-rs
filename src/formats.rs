@@ -21,19 +21,19 @@ impl DiscFormat {
         let ext = path.as_ref().extension()?.to_str()?.to_lowercase();
         match ext.as_str() {
             "iso" | "toast" => Some(Self::Iso),
-            "bin" | "cue"   => Some(Self::BinCue),
-            "chd"           => Some(Self::Chd),
-            "mds" | "mdf"   => Some(Self::MdsMdf),
-            _               => None,
+            "bin" | "cue" => Some(Self::BinCue),
+            "chd" => Some(Self::Chd),
+            "mds" | "mdf" => Some(Self::MdsMdf),
+            _ => None,
         }
     }
 
     /// Human-readable name for this format.
     pub fn display_name(self) -> &'static str {
         match self {
-            Self::Iso    => "ISO image",
+            Self::Iso => "ISO image",
             Self::BinCue => "BIN/CUE",
-            Self::Chd    => "CHD (Compressed Hunks of Data)",
+            Self::Chd => "CHD (Compressed Hunks of Data)",
             Self::MdsMdf => "MDS/MDF",
         }
     }
@@ -41,9 +41,9 @@ impl DiscFormat {
     /// File extensions associated with this format.
     pub fn extensions(self) -> &'static [&'static str] {
         match self {
-            Self::Iso    => &["iso", "toast"],
+            Self::Iso => &["iso", "toast"],
             Self::BinCue => &["bin", "cue"],
-            Self::Chd    => &["chd"],
+            Self::Chd => &["chd"],
             Self::MdsMdf => &["mds", "mdf"],
         }
     }
@@ -76,9 +76,9 @@ impl FilesystemType {
     pub fn display_name(self) -> &'static str {
         match self {
             Self::Iso9660 => "ISO 9660",
-            Self::Joliet  => "Joliet",
-            Self::Udf     => "UDF",
-            Self::Hfs     => "HFS",
+            Self::Joliet => "Joliet",
+            Self::Udf => "UDF",
+            Self::Hfs => "HFS",
             Self::HfsPlus => "HFS+",
             Self::Unknown => "Unknown",
         }
@@ -96,12 +96,12 @@ mod tests {
 
     #[test]
     fn format_from_extension() {
-        assert_eq!(DiscFormat::from_path("game.iso"),  Some(DiscFormat::Iso));
-        assert_eq!(DiscFormat::from_path("game.ISO"),  Some(DiscFormat::Iso));
-        assert_eq!(DiscFormat::from_path("game.toast"),Some(DiscFormat::Iso));
-        assert_eq!(DiscFormat::from_path("game.bin"),  Some(DiscFormat::BinCue));
-        assert_eq!(DiscFormat::from_path("game.cue"),  Some(DiscFormat::BinCue));
-        assert_eq!(DiscFormat::from_path("game.chd"),  Some(DiscFormat::Chd));
-        assert_eq!(DiscFormat::from_path("game.txt"),  None);
+        assert_eq!(DiscFormat::from_path("game.iso"), Some(DiscFormat::Iso));
+        assert_eq!(DiscFormat::from_path("game.ISO"), Some(DiscFormat::Iso));
+        assert_eq!(DiscFormat::from_path("game.toast"), Some(DiscFormat::Iso));
+        assert_eq!(DiscFormat::from_path("game.bin"), Some(DiscFormat::BinCue));
+        assert_eq!(DiscFormat::from_path("game.cue"), Some(DiscFormat::BinCue));
+        assert_eq!(DiscFormat::from_path("game.chd"), Some(DiscFormat::Chd));
+        assert_eq!(DiscFormat::from_path("game.txt"), None);
     }
 }

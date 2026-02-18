@@ -1,7 +1,7 @@
 //! `Filesystem` trait — the common interface for all disc filesystem browsers.
 
-use thiserror::Error;
 use super::entry::FileEntry;
+use thiserror::Error;
 
 /// Errors returned by filesystem operations.
 #[derive(Debug, Error)]

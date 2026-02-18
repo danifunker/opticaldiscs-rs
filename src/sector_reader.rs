@@ -23,12 +23,12 @@ pub trait SectorReader: Send {
 
     /// Read `length` bytes starting at `byte_offset` (cooked address space).
     fn read_bytes(&mut self, byte_offset: u64, length: usize) -> Result<Vec<u8>> {
-        let sector_lba  = byte_offset / SECTOR_SIZE;
-        let sector_off  = (byte_offset % SECTOR_SIZE) as usize;
-        let mut out     = Vec::with_capacity(length);
+        let sector_lba = byte_offset / SECTOR_SIZE;
+        let sector_off = (byte_offset % SECTOR_SIZE) as usize;
+        let mut out = Vec::with_capacity(length);
         let mut remaining = length;
-        let mut lba     = sector_lba;
-        let mut offset  = sector_off;
+        let mut lba = sector_lba;
+        let mut offset = sector_off;
 
         while remaining > 0 {
             let sector = self.read_sector(lba)?;

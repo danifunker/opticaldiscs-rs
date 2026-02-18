@@ -40,15 +40,15 @@
 // ── Modules (implemented progressively per PLAN.md) ──────────────────────────
 
 // Phase 1
+pub mod browse;
 pub mod error;
 pub mod formats;
-pub mod browse;
 
 // Phase 2-4
-pub mod sector_reader;
-pub mod iso9660;
 pub mod bincue;
 pub mod chd;
+pub mod iso9660;
+pub mod sector_reader;
 
 // Phase 5
 #[cfg(feature = "toc")]
@@ -68,6 +68,11 @@ pub mod drives;
 
 // ── Top-level re-exports ──────────────────────────────────────────────────────
 
+// Phase 1
+pub use browse::entry::{EntryType, FileEntry};
+pub use browse::filesystem::{Filesystem, FilesystemError};
 pub use error::OpticaldiscsError;
-pub use formats::{DiscFormat, FilesystemType};
+pub use formats::{supported_extensions, DiscFormat, FilesystemType};
+
+// Phase 2
 pub use sector_reader::SectorReader;

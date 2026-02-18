@@ -127,47 +127,49 @@ Progress key: `[ ]` pending · `[x]` done · `[-]` skipped/deferred
 
 ---
 
-### Phase 0 — Repository Scaffold
+### Phase 0 — Repository Scaffold ✅
 **Goal:** Working Cargo library that compiles with `cargo build` and `cargo test`.
 
-- [ ] **0.1** Initialize `Cargo.toml` as a library crate (`opticaldiscs`, GPL-3.0)
-- [ ] **0.2** Create `src/lib.rs` with module stubs and feature-flag gates
-- [ ] **0.3** Add `.gitignore` entries for `target/`, `*.swp`, `Cargo.lock` (lib convention)
-- [ ] **0.4** Add `README.md` (crate description, quick example, license badge)
-- [ ] **0.5** Set up GitHub Actions CI: `cargo build`, `cargo test`, `cargo clippy`,
+- [x] **0.1** Initialize `Cargo.toml` as a library crate (`opticaldiscs`, GPL-3.0)
+- [x] **0.2** Create `src/lib.rs` with module stubs and feature-flag gates
+- [x] **0.3** Add `.gitignore` entries for `target/`, `*.swp`, `Cargo.lock` (lib convention)
+- [x] **0.4** Add `README.md` (crate description, quick example, license badge)
+- [x] **0.5** Set up GitHub Actions CI: `cargo build`, `cargo test`, `cargo clippy`,
               `cargo fmt --check`
-- [ ] **0.6** Add `tests/` directory with a placeholder integration test
+- [x] **0.6** Add `tests/` directory with a placeholder integration test
 
 **Deliverable:** `cargo build` passes, CI green, repo is ready for code.
 
 ---
 
-### Phase 1 — Core Types
+### Phase 1 — Core Types ✅
 **Goal:** The shared enums, error type, and entry type that everything else depends on.
 Ported from `ODE/src/disc/formats.rs`, `browse/entry.rs`, `browse/filesystem.rs`.
 
-- [ ] **1.1** `src/formats.rs`
+- [x] **1.1** `src/formats.rs`
   - `DiscFormat` enum: `Iso`, `BinCue`, `Chd`, `MdsMdf`
   - `FilesystemType` enum: `Iso9660`, `Joliet`, `Udf`, `Hfs`, `HfsPlus`, `Unknown`
   - `DiscFormat::from_path()` extension detection
   - `supported_extensions()` helper
 
-- [ ] **1.2** `src/error.rs`
+- [x] **1.2** `src/error.rs`
   - `OpticaldiscsError` (thiserror) covering IO, parse, format, unsupported, not-found
 
-- [ ] **1.3** `src/browse/entry.rs`
+- [x] **1.3** `src/browse/entry.rs`
   - `FileEntry` struct: name, path, entry_type, size, location, children
   - `EntryType` enum: `File`, `Directory`
   - `new_file()`, `new_directory()`, `root()`, `size_string()` helpers
 
-- [ ] **1.4** `src/browse/filesystem.rs`
+- [x] **1.4** `src/browse/filesystem.rs`
   - `Filesystem` trait: `root()`, `list_directory()`, `read_file()`,
     `read_file_range()`, `volume_name()`
   - `FilesystemError` (thiserror)
 
-- [ ] **1.5** Wire up `src/lib.rs` public re-exports for all Phase 1 types
+- [x] **1.5** Wire up `src/lib.rs` public re-exports for all Phase 1 types
 
-- [ ] **1.6** Unit tests for `DiscFormat::from_path()`, `FileEntry` helpers
+- [x] **1.6** Unit tests for `DiscFormat::from_path()`, `FileEntry` helpers
+  - 9 unit tests in `browse/entry.rs`, 1 unit test in `formats.rs`
+  - 5 integration tests in `tests/integration_test.rs`
 
 **Deliverable:** Types compile; downstream code can depend on `opticaldiscs::formats`,
 `opticaldiscs::browse::entry`, etc.
