@@ -363,33 +363,39 @@ get everything they need about a disc image.
 
 ---
 
-### Phase 7 — ISO 9660 Filesystem Browser
+### Phase 7 — ISO 9660 Filesystem Browser ✅
 **Goal:** Browse directories and read files from any ISO 9660 disc image regardless of
 container. Ported from `ODE/src/disc/browse/iso9660_fs.rs`.
 
-- [ ] **7.1** `src/browse/iso9660.rs` — `Iso9660Filesystem`
+- [x] **7.1** `src/browse/iso9660.rs` — `Iso9660Filesystem`
   - Constructor: `new(reader: Box<dyn SectorReader>) -> Result<Self, FilesystemError>`
-  - Reads PVD at sector 16, extracts root directory LBA + size
+  - Re-uses existing `PrimaryVolumeDescriptor::read_from()` (avoids duplicating PVD parsing)
 
-- [ ] **7.2** `src/browse/iso9660.rs` — `DirectoryRecord`
-  - length, extent_location (LBA), data_length, file_flags, file_identifier
+- [x] **7.2** `src/browse/iso9660.rs` — `DirectoryRecord` (private)
+  - extent_location, data_length, file_flags, file_identifier
   - `is_directory()`, `is_self()`, `is_parent()`, `clean_name()` (strip `;1` version)
 
-- [ ] **7.3** `src/browse/iso9660.rs` — implement `Filesystem` trait
-  - `root()` — read root from PVD
-  - `list_directory(entry)` — seek to entry's LBA, parse all directory records
-  - `read_file(entry)` — read entry's sectors into Vec<u8>
-  - `read_file_range(entry, offset, length)` — partial read
+- [x] **7.3** `src/browse/iso9660.rs` — implement `Filesystem` trait
+  - `root()` — returns root from PVD, sets `size` field for `list_directory` to use
+  - `list_directory(entry)` — reads directory extent via `read_bytes`, parses records;
+    stores `data_length` in `entry.size` for directories (no re-read needed)
+  - `read_file(entry)` — reads file extent via `read_bytes`
+  - `read_file_range(entry, offset, length)` — partial read via `read_bytes`
 
-- [ ] **7.4** `src/browse/mod.rs` — `open_disc_filesystem()`
-  - Routes by `DiscFormat` to the right sector reader
-  - Routes by `FilesystemType` to the right `Filesystem` impl
-  - Returns `Box<dyn Filesystem>`
+- [x] **7.4** `src/browse/mod.rs` — `open_disc_filesystem(info: &DiscImageInfo)`
+  - Creates the right `SectorReader` for the container format (ISO, BIN/CUE, CHD)
+  - Creates `Iso9660Filesystem`; `FilesystemType::Hfs/HfsPlus` return `Unsupported`
 
-- [ ] **7.5** Tests: list root of an ISO9660 fixture, verify expected files present
+- [x] **7.5** Tests: 12 unit tests in `browse/iso9660.rs` (parse_directory, read_file,
+  read_file_range, volume_name, error cases, sorting, DirectoryRecord parsing);
+  5 integration tests: `browse_iso_root`, `browse_iso_file_listing`,
+  `browse_iso_read_file`, `browse_iso_volume_name`, `browse_bincue_iso9660`
+  - 58 unit + 23 integration = 81 total passing (no feature)
+  - 78 unit + 23 integration + 2 doc-tests = 103 total passing (`--features toc`)
+  - `cargo clippy --features toc` and `cargo fmt --check` clean
 
 **Deliverable:** `open_disc_filesystem(&disc_info)` returns a browsable filesystem
-for ISO images.
+for ISO images (plain ISO, BIN/CUE, and CHD containers).
 
 ---
 

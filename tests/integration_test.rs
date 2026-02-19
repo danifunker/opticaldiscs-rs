@@ -163,7 +163,8 @@ fn disc_image_info_open_iso() {
 /// Layout (raw 2352-byte sectors):
 ///   sectors  0-15 : zeros (system area)
 ///   sector  16    : Mode1 header (16 bytes) + PVD (2048 bytes) + EDC/ECC zeros
-///   sector  17    : zeros
+///   sector  17    : zeros (Volume Descriptor Set Terminator)
+///   sector  18    : zeros (root directory — empty)
 #[cfg(test)]
 fn write_test_bincue(
     volume_label: &str,
@@ -172,11 +173,11 @@ fn write_test_bincue(
     use std::io::Write;
 
     const RAW: usize = 2352;
-    const SECTORS: usize = 18;
+    const SECTORS: usize = 19; // system area + PVD + terminator + root dir
 
     let dir = tempfile::tempdir().expect("tempdir");
 
-    // Build raw BIN: 18 sectors × 2352 bytes
+    // Build raw BIN: 19 sectors × 2352 bytes
     let mut bin = vec![0u8; SECTORS * RAW];
 
     // Embed the PVD at sector 16: 16-byte Mode1 header + 2048-byte user data
@@ -359,17 +360,157 @@ fn disc_image_info_iso_has_no_toc() {
     assert!(info.toc.is_none(), "plain ISO should have no TOC");
 }
 
-// ── Phase 7: ISO9660 Browser ──────────────────────────────────────────────────
-// Uncomment when Iso9660Filesystem is implemented.
+// ── Phase 7: ISO9660 Browser ─────────────────────────────────────────────────
 
-// #[test]
-// fn browse_iso_root() {
-//     use opticaldiscs::detect::DiscImageInfo;
-//     let (_f, path) = write_test_iso("BROWSE_TEST");
-//     let info = DiscImageInfo::open(&path).unwrap();
-//     let mut fs = opticaldiscs::browse::open_disc_filesystem(&info).unwrap();
-//     let root = fs.root().unwrap();
-//     let entries = fs.list_directory(&root).unwrap();
-//     // Empty root dir in our minimal image is fine — just check it doesn't panic
-//     let _ = entries;
-// }
+/// Build a minimal ISO 9660 image with files in the root directory.
+///
+/// Each entry in `files` is a `(identifier_with_version, content)` pair.
+/// Files are placed at consecutive sectors starting at sector 19;
+/// the root directory lives at sector 18.
+#[cfg(test)]
+fn write_test_iso_with_files(
+    volume_label: &str,
+    files: &[(&str, &[u8])],
+) -> (tempfile::NamedTempFile, std::path::PathBuf) {
+    use opticaldiscs::iso9660::build_test_pvd_sector;
+    use std::io::Write;
+
+    const SECTOR: usize = 2048;
+    let total_sectors = 19 + files.len();
+    let mut img = vec![0u8; total_sectors * SECTOR];
+
+    // PVD at sector 16, root dir at sector 18, size = one sector.
+    let pvd = build_test_pvd_sector(volume_label, 18, SECTOR as u32);
+    img[16 * SECTOR..17 * SECTOR].copy_from_slice(&pvd);
+
+    // Volume Descriptor Set Terminator at sector 17.
+    img[17 * SECTOR] = 0xFF;
+    img[17 * SECTOR + 1..17 * SECTOR + 6].copy_from_slice(b"CD001");
+    img[17 * SECTOR + 6] = 1;
+
+    // Root directory at sector 18.
+    let mut dir = vec![0u8; SECTOR];
+    let mut dir_off = 0usize;
+
+    let mut append_rec =
+        |buf: &mut Vec<u8>, off: &mut usize, lba: u32, len: u32, flags: u8, id: &[u8]| {
+            let id_len = id.len();
+            let rec_len = 33 + id_len;
+            let rec_len = if rec_len % 2 == 0 {
+                rec_len
+            } else {
+                rec_len + 1
+            };
+            buf[*off] = rec_len as u8;
+            buf[*off + 2..*off + 6].copy_from_slice(&lba.to_le_bytes());
+            buf[*off + 6..*off + 10].copy_from_slice(&lba.to_be_bytes());
+            buf[*off + 10..*off + 14].copy_from_slice(&len.to_le_bytes());
+            buf[*off + 14..*off + 18].copy_from_slice(&len.to_be_bytes());
+            buf[*off + 25] = flags;
+            buf[*off + 32] = id_len as u8;
+            buf[*off + 33..*off + 33 + id_len].copy_from_slice(id);
+            *off += rec_len;
+        };
+
+    // `.` and `..` entries (both pointing to root sector 18).
+    append_rec(&mut dir, &mut dir_off, 18, SECTOR as u32, 0x02, b"\x00");
+    append_rec(&mut dir, &mut dir_off, 18, SECTOR as u32, 0x02, b"\x01");
+
+    for (i, (name, content)) in files.iter().enumerate() {
+        let file_lba = 19u32 + i as u32;
+        append_rec(
+            &mut dir,
+            &mut dir_off,
+            file_lba,
+            content.len() as u32,
+            0x00,
+            name.as_bytes(),
+        );
+        let sector_start = (19 + i) * SECTOR;
+        let copy_len = content.len().min(SECTOR);
+        img[sector_start..sector_start + copy_len].copy_from_slice(&content[..copy_len]);
+    }
+
+    img[18 * SECTOR..19 * SECTOR].copy_from_slice(&dir);
+
+    let mut f = tempfile::Builder::new()
+        .suffix(".iso")
+        .tempfile()
+        .expect("tempfile");
+    f.write_all(&img).expect("write");
+    f.flush().expect("flush");
+    let path = f.path().to_path_buf();
+    (f, path)
+}
+
+#[test]
+fn browse_iso_root() {
+    use opticaldiscs::detect::DiscImageInfo;
+
+    let (_f, path) = write_test_iso("BROWSE_TEST");
+    let info = DiscImageInfo::open(&path).unwrap();
+    let mut fs = opticaldiscs::browse::open_disc_filesystem(&info).unwrap();
+    let root = fs.root().unwrap();
+    let entries = fs.list_directory(&root).unwrap();
+    // Empty root dir in our minimal image is fine — just check it doesn't panic.
+    assert!(entries.is_empty());
+}
+
+#[test]
+fn browse_iso_file_listing() {
+    use opticaldiscs::detect::DiscImageInfo;
+
+    let (_f, path) = write_test_iso_with_files(
+        "FILES_TEST",
+        &[("README.TXT;1", b"hello"), ("DATA.BIN;1", b"binary")],
+    );
+    let info = DiscImageInfo::open(&path).unwrap();
+    let mut fs = opticaldiscs::browse::open_disc_filesystem(&info).unwrap();
+
+    let root = fs.root().unwrap();
+    let entries = fs.list_directory(&root).unwrap();
+
+    assert_eq!(entries.len(), 2);
+    let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
+    assert!(names.contains(&"README.TXT"));
+    assert!(names.contains(&"DATA.BIN"));
+}
+
+#[test]
+fn browse_iso_read_file() {
+    use opticaldiscs::detect::DiscImageInfo;
+
+    let content = b"the quick brown fox";
+    let (_f, path) = write_test_iso_with_files("READ_TEST", &[("FOX.TXT;1", content)]);
+    let info = DiscImageInfo::open(&path).unwrap();
+    let mut fs = opticaldiscs::browse::open_disc_filesystem(&info).unwrap();
+
+    let root = fs.root().unwrap();
+    let entries = fs.list_directory(&root).unwrap();
+    let file = entries.iter().find(|e| e.name == "FOX.TXT").unwrap();
+
+    let data = fs.read_file(file).unwrap();
+    assert_eq!(data, content);
+}
+
+#[test]
+fn browse_iso_volume_name() {
+    use opticaldiscs::detect::DiscImageInfo;
+
+    let (_f, path) = write_test_iso_with_files("MY_VOLUME", &[]);
+    let info = DiscImageInfo::open(&path).unwrap();
+    let fs = opticaldiscs::browse::open_disc_filesystem(&info).unwrap();
+    assert_eq!(fs.volume_name(), Some("MY_VOLUME"));
+}
+
+#[test]
+fn browse_bincue_iso9660() {
+    use opticaldiscs::detect::DiscImageInfo;
+
+    // BIN/CUE image with ISO 9660 filesystem should also be browsable.
+    let (_dir, _bin, cue_path) = write_test_bincue("BINCUE_BROWSE");
+    let info = DiscImageInfo::open(&cue_path).unwrap();
+    let mut fs = opticaldiscs::browse::open_disc_filesystem(&info).unwrap();
+    let root = fs.root().unwrap();
+    let _ = fs.list_directory(&root).unwrap();
+}
