@@ -300,6 +300,65 @@ fn disc_image_info_open_chd() {
     assert!(info.volume_label.is_some());
 }
 
+// ── Phase 6: Disc Detection ───────────────────────────────────────────────────
+
+#[test]
+fn detect_format_from_extension() {
+    use opticaldiscs::detect::detect_format;
+    use opticaldiscs::DiscFormat;
+    use std::path::Path;
+
+    assert_eq!(
+        detect_format(Path::new("disc.iso")).unwrap(),
+        DiscFormat::Iso
+    );
+    assert_eq!(
+        detect_format(Path::new("disc.cue")).unwrap(),
+        DiscFormat::BinCue
+    );
+    assert_eq!(
+        detect_format(Path::new("disc.chd")).unwrap(),
+        DiscFormat::Chd
+    );
+}
+
+#[test]
+fn detect_filesystem_on_iso() {
+    use opticaldiscs::detect::detect_filesystem;
+    use opticaldiscs::sector_reader::IsoSectorReader;
+    use opticaldiscs::FilesystemType;
+
+    let (_f, path) = write_test_iso("DETECT_FS");
+    let mut reader = IsoSectorReader::new(&path).unwrap();
+    let fs = detect_filesystem(&mut reader).unwrap();
+    assert_eq!(fs, FilesystemType::Iso9660);
+}
+
+#[cfg(feature = "toc")]
+#[test]
+fn disc_image_info_bincue_has_toc() {
+    use opticaldiscs::detect::DiscImageInfo;
+
+    let (_dir, _bin, cue_path) = write_test_bincue("TOC_BINCUE");
+    let info = DiscImageInfo::open(&cue_path).unwrap();
+
+    let toc = info.toc.as_ref().expect("BIN/CUE should have a TOC");
+    assert_eq!(toc.first_track, 1);
+    assert_eq!(toc.track_count(), 1);
+    // Lead-out should be > 150 (pregap) + some frames
+    assert!(toc.lead_out > 150);
+}
+
+#[cfg(feature = "toc")]
+#[test]
+fn disc_image_info_iso_has_no_toc() {
+    use opticaldiscs::detect::DiscImageInfo;
+
+    let (_f, path) = write_test_iso("NO_TOC_ISO");
+    let info = DiscImageInfo::open(&path).unwrap();
+    assert!(info.toc.is_none(), "plain ISO should have no TOC");
+}
+
 // ── Phase 7: ISO9660 Browser ──────────────────────────────────────────────────
 // Uncomment when Iso9660Filesystem is implemented.
 

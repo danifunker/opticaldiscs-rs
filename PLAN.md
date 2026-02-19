@@ -332,27 +332,31 @@ not `-` for position-62, trailing `-` for padding).
 
 ---
 
-### Phase 6 — Disc Detection
+### Phase 6 — Disc Detection ✅
 **Goal:** Given a file path, determine both `DiscFormat` and `FilesystemType` without
 the caller needing to know anything about the internals.
 
-- [ ] **6.1** `src/detect.rs` — `DiscFormat::detect_from_path(path: &Path)`
-  - Extension-based fast path
-  - Magic bytes fallback (CHD header, ISO `CD001` at offset 32769)
+- [x] **6.1** `src/detect.rs` — `detect_format(path: &Path) -> Result<DiscFormat>`
+  - Extension-based fast path (no I/O)
+  - Magic bytes fallback: CHD (`MComprHD` at offset 0), ISO 9660 (`CD001` at offset 32769)
 
-- [ ] **6.2** `src/detect.rs` — `detect_filesystem(reader: &mut dyn SectorReader)`
-  - Check ISO9660 PVD at sector 16
-  - Check HFS MDB signature at byte 1024
-  - Check HFS+ volume header at byte 1024
-  - Check APM DDM signature at byte 0
-  - Returns `FilesystemType`
+- [x] **6.2** `src/detect.rs` — `detect_filesystem(reader: &mut dyn SectorReader)`
+  - Thin public wrapper over internal `probe_filesystem`
+  - Returns `FilesystemType` (ISO 9660, HFS, HFS+, APM, Unknown)
 
-- [ ] **6.3** `src/detect.rs` — `DiscImageInfo` struct (public)
+- [x] **6.3** `src/detect.rs` — `DiscImageInfo` struct (public)
   - `format`, `filesystem`, `volume_label: Option<String>`,
-    `pvd: Option<PrimaryVolumeDescriptor>`, `toc: Option<DiscTOC>`
-  - `DiscImageInfo::open(path: &Path) -> Result<Self>`  — the one-stop entry point
+    `pvd: Option<PrimaryVolumeDescriptor>`,
+    `#[cfg(feature = "toc")] toc: Option<DiscTOC>`
+  - `DiscImageInfo::open()` updated to use `detect_format` (magic-byte aware)
+  - TOC populated for BIN/CUE (from track `file_byte_offset` + BIN file size) and
+    CHD (from `ChdTrack.frame_offset` + `.frames`); `None` for plain ISO
 
-- [ ] **6.4** Tests: `DiscImageInfo::open()` on each fixture type (ISO, BIN/CUE, CHD)
+- [x] **6.4** Tests: `detect_format_*` (extension + magic bytes), `detect_filesystem_*`,
+  `disc_image_info_bincue_has_toc`, `disc_image_info_iso_has_no_toc`
+  - 60 unit + 16 integration = 76 total passing (no `toc` feature)
+  - 64 unit + 18 integration + 2 doc-tests = 84 total passing (`--features toc`)
+  - `cargo clippy --features toc` and `cargo fmt --check` clean
 
 **Deliverable:** Users of the library only need to call `DiscImageInfo::open(path)` to
 get everything they need about a disc image.
