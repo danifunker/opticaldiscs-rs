@@ -79,3 +79,6 @@ pub use sector_reader::SectorReader;
 
 // Phase 3
 pub use sector_reader::BinCueSectorReader;
+
+// Phase 4
+pub use sector_reader::ChdSectorReader;

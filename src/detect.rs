@@ -12,10 +12,13 @@
 use std::path::{Path, PathBuf};
 
 use crate::bincue::parse_cue_tracks;
+use crate::chd::open_chd;
 use crate::error::{OpticaldiscsError, Result};
 use crate::formats::{DiscFormat, FilesystemType};
 use crate::iso9660::PrimaryVolumeDescriptor;
-use crate::sector_reader::{BinCueSectorReader, IsoSectorReader, SectorReader, SECTOR_SIZE};
+use crate::sector_reader::{
+    BinCueSectorReader, ChdSectorReader, IsoSectorReader, SectorReader, SECTOR_SIZE,
+};
 
 /// All available information about a disc image, obtained without full parsing.
 ///
@@ -59,9 +62,7 @@ impl DiscImageInfo {
         match format {
             DiscFormat::Iso => Self::probe_iso(path),
             DiscFormat::BinCue => Self::probe_bincue(path),
-            DiscFormat::Chd => Err(OpticaldiscsError::UnsupportedFormat(
-                "CHD support coming in Phase 4".into(),
-            )),
+            DiscFormat::Chd => Self::probe_chd(path),
             DiscFormat::MdsMdf => Err(OpticaldiscsError::UnsupportedFormat(
                 "MDS/MDF is not supported".into(),
             )),
@@ -124,6 +125,41 @@ impl DiscImageInfo {
         Ok(Self {
             path: path.to_path_buf(),
             format: DiscFormat::Iso,
+            filesystem,
+            volume_label,
+            pvd,
+        })
+    }
+
+    /// Probe a `.chd` file.
+    ///
+    /// Parses CHT2 track metadata, locates the first data track, and probes
+    /// the filesystem through a [`ChdSectorReader`].  Audio-only discs (no
+    /// data track) are returned with `FilesystemType::Unknown`.
+    fn probe_chd(path: &Path) -> Result<Self> {
+        let chd_info = open_chd(path)?;
+
+        let data_track = match chd_info.find_first_data_track() {
+            Some(track) => track.clone(),
+            None => {
+                // Audio-only disc — valid CHD, but no filesystem to probe
+                return Ok(Self {
+                    path: path.to_path_buf(),
+                    format: DiscFormat::Chd,
+                    filesystem: FilesystemType::Unknown,
+                    volume_label: None,
+                    pvd: None,
+                });
+            }
+        };
+
+        let mut reader = ChdSectorReader::open(path, &data_track)?;
+        let (filesystem, pvd) = probe_filesystem(&mut reader)?;
+        let volume_label = pvd.as_ref().map(|p| p.volume_id.clone());
+
+        Ok(Self {
+            path: path.to_path_buf(),
+            format: DiscFormat::Chd,
             filesystem,
             volume_label,
             pvd,

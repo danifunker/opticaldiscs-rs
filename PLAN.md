@@ -254,30 +254,36 @@ now works for `.cue` files.
 
 ---
 
-### Phase 4 — CHD Sector Reader
+### Phase 4 — CHD Sector Reader ✅
 **Goal:** Read sectors from a `.chd` optical disc image via the `chd` crate.
 Ported from `ODE/src/disc/chd.rs` and `ODE/src/disc/browse/reader.rs` (ChdSectorReader).
 
-- [ ] **4.1** `src/chd.rs` — CHD metadata parsing
+- [x] **4.1** `src/chd.rs` — CHD metadata parsing
   - Open CHD via `chd::Chd::open()`
   - Parse `CHT2` metadata tag (0x43485432) for track list
-  - Build `Vec<ChdTrack>`: track_no, track_type, frames, frame_offset, frame_size,
-    data_offset
+  - Build `Vec<ChdTrack>`: track_no, track_type, frames, frame_offset (frame_size
+    is always 2448; data_offset derived from track_type)
   - `find_first_data_track()` — returns the track to use for ISO9660/HFS reading
 
-- [ ] **4.2** `src/chd.rs` — `ChdInfo` struct
-  - volume_label (Option), filesystem type hint, hunk_size, logical_size, tracks,
-    toc (Option, gated behind `toc` feature)
+- [x] **4.2** `src/chd.rs` — `ChdInfo` struct
+  - hunk_size, logical_size, tracks; toc deferred to Phase 5
 
-- [ ] **4.3** `src/sector_reader.rs` — `ChdSectorReader`
-  - Holds `chd::Chd`, hunk_size, track frame_offset, frame_size, data_offset
+- [x] **4.3** `src/sector_reader.rs` — `ChdSectorReader`
+  - Holds `chd::Chd<BufReader<File>>`, hunk_size, track_byte_offset, data_offset
   - Translates LBA → hunk index + offset within hunk
-  - Decompresses hunks on demand (via `chd` crate), caches last hunk
+  - Decompresses hunks on demand (via `chd` crate), caches last hunk in place
+    (no separate Vec clone — hunk_buf IS the cache)
 
-- [ ] **4.4** Update `src/detect.rs` to probe CHD files
-  - Open CHD, find first data track, read PVD/HFS header
+- [x] **4.4** Update `src/detect.rs` to probe CHD files
+  - `probe_chd()` opens CHD, finds first data track, reads PVD/HFS header
+  - Audio-only discs return `FilesystemType::Unknown` cleanly
 
-- [ ] **4.5** Tests: read PVD from a `.chd` optical test fixture
+- [x] **4.5** Tests: 9 unit tests in `chd.rs` (CHT2 parsing, track types,
+  data offsets, find_first_data_track, error on missing file)
+  - 3 integration tests: `open_chd_missing_file_returns_io_error` (always runs),
+    `chd_sector_reader_reads_pvd` and `disc_image_info_open_chd` (skip gracefully
+    if `tests/fixtures/data.chd` is absent — create with `chdman createcd`)
+  - 52 total tests passing; `cargo clippy` and `cargo fmt --check` clean
 
 **Deliverable:** All three container formats present a uniform `SectorReader` interface.
 The same ISO9660 / HFS code works regardless of container.
