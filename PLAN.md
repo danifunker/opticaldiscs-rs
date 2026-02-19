@@ -290,35 +290,45 @@ The same ISO9660 / HFS code works regardless of container.
 
 ---
 
-### Phase 5 — TOC & Disc Metadata  *(feature = "toc")*
+### Phase 5 — TOC & Disc Metadata  *(feature = "toc")* ✅
 **Goal:** Represent a disc's Table of Contents; calculate MusicBrainz and FreeDB IDs.
 Ported from `ODE/src/disc/toc.rs`.
 
-- [ ] **5.1** `src/toc.rs` — `DiscTOC`
+- [x] **5.1** `src/toc.rs` — `DiscTOC`
   - `first_track`, `last_track`, `lead_out` (frames), `track_offsets: Vec<u32>`
+  - All stored as absolute frames (150-frame pregap already added)
 
-- [ ] **5.2** `src/toc.rs` — `TrackInfo`
-  - `number`, `offset` (frames), `track_type`
+- [x] **5.2** `src/toc.rs` — `TrackInfo`
+  - `number`, `offset` (raw frames, without pregap), `track_type`
 
-- [ ] **5.3** `src/toc.rs` — helpers
-  - `parse_msf(s: &str) -> u32` — `"MM:SS:FF"` → frames
-  - `frames_to_msf(frames: u32) -> (u8, u8, u8)` — inverse
-  - `DiscTOC::from_tracks(tracks: &[TrackInfo], lead_out: u32)`
+- [x] **5.3** `src/toc.rs` — helpers
+  - `parse_msf(s: &str) -> Result<u32>` — `"MM:SS:FF"` → frames
+  - `frames_to_msf(frames: u32) -> (u8, u8, u8)` — inverse, always succeeds
+  - `DiscTOC::from_tracks(tracks: &[TrackInfo], lead_out: u32)` — adds 150-frame pregap
   - `DiscTOC::total_seconds()`, `total_time_string()`, `track_count()`
+  - `FRAMES_PER_SECOND = 75`, `PREGAP_FRAMES = 150` exported as public constants
 
-- [ ] **5.4** `src/toc.rs` — MusicBrainz DiscID *(requires `toc` feature)*
-  - SHA-1 over binary TOC data → base64url (RFC 4648)
+- [x] **5.4** `src/toc.rs` — MusicBrainz DiscID *(requires `toc` feature)*
+  - SHA-1 over 402-byte binary record (per MB spec)
+  - **Correct MB base64 variant**: standard Base64 with `+`→`.`, `/`→`_`, `=`→`-`
+    (NOT RFC 4648 base64url — that encoding is wrong for MusicBrainz)
+  - Produces 28-character strings (e.g. `"88mmRzPF.QgexLjFmYaEiNMUN44-"`)
   - `DiscTOC::musicbrainz_id() -> String`
 
-- [ ] **5.5** `src/toc.rs` — FreeDB DiscID *(requires `toc` feature)*
-  - Legacy checksum algorithm
+- [x] **5.5** `src/toc.rs` — FreeDB DiscID *(requires `toc` feature)*
+  - Legacy CDDB checksum algorithm
   - `DiscTOC::freedb_id() -> String`
 
-- [ ] **5.6** Tests for MSF parsing and both DiscID algorithms
-  - Use a known disc TOC with a published MB ID to validate
+- [x] **5.6** 20 unit tests: MSF parse/roundtrip, frames_to_msf, from_tracks, helpers,
+  FreeDB ID (manually verified: `"0d022202"` for the 2-track test vector),
+  MB DiscID verified against Python-computed value `"88mmRzPF.QgexLjFmYaEiNMUN44-"`,
+  plus length=28 and char-set assertions
+  - 58 unit + 14 integration + 2 doc-tests = 74 total passing
+  - `cargo clippy --features toc` and `cargo fmt --check` clean
 
 **Deliverable:** Audio CD metadata fully supported; ODE can replace its `toc.rs` with
-this module.
+this module. Key correctness fix over ODE: proper MB base64 encoding (28 chars, `.`
+not `-` for position-62, trailing `-` for padding).
 
 ---
 
