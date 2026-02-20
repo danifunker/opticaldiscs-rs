@@ -82,3 +82,7 @@ pub use sector_reader::BinCueSectorReader;
 
 // Phase 4
 pub use sector_reader::ChdSectorReader;
+
+// Phase 8
+pub use hfs::MasterDirectoryBlock;
+pub use hfsplus::HfsPlusVolumeHeader;

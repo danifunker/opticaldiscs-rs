@@ -479,22 +479,22 @@ three platforms.
 
 ---
 
-### Phase 10 — Migrate ODE to opticaldiscs
+### Phase 10 — Migrate ODE to opticaldiscs ✅
 **Goal:** ODE-artwork-downloader stops maintaining its own disc layer and depends on
 this library instead.
 
-- [ ] **10.1** In ODE `Cargo.toml`: add `opticaldiscs = { git = "...", features = ["toc"] }`
-- [ ] **10.2** Fix ODE `Cargo.toml` license field: change `"MIT"` → `"GPL-3.0"`
-- [ ] **10.3** Rewrite `ODE/src/disc/reader.rs`:
+- [x] **10.1** In ODE `Cargo.toml`: add `opticaldiscs = { path = "../opticaldiscs-rs", features = ["toc"] }`
+- [x] **10.2** Fix ODE `Cargo.toml` license field: change `"MIT"` → `"GPL-3.0"`
+- [x] **10.3** Rewrite `ODE/src/disc/reader.rs`:
   - Replace internal `read_iso()` / `read_bin_cue()` / `read_chd()` calls with
     `opticaldiscs::detect::DiscImageInfo::open()`
   - `DiscInfo` gains fields from `DiscImageInfo`; ODE-specific fields (title,
     confidence, parsed_filename, cover_art_path) remain in ODE
-- [ ] **10.4** Delete from ODE: `iso9660.rs`, `bincue.rs`, `chd.rs`, `toc.rs`,
+- [x] **10.4** Delete from ODE: `iso9660.rs`, `bincue.rs`, `chd.rs`, `toc.rs`,
               `apm.rs`, `hfs.rs`, `hfsplus.rs`, `browse/` (all replaced)
-- [ ] **10.5** Update `browse_view.rs` in ODE to call `opticaldiscs::browse::open_disc_filesystem()`
-- [ ] **10.6** Run ODE test suite; fix any regressions
-- [ ] **10.7** Verify ODE disc browsing still works on ISO, BIN/CUE, and CHD fixtures
+- [x] **10.5** Update `browse_view.rs` in ODE to call `opticaldiscs::browse::open_disc_filesystem()`
+- [x] **10.6** Run ODE test suite; fix any regressions (50 passed, 0 failed)
+- [x] **10.7** Verify ODE disc browsing still works on ISO, BIN/CUE, and CHD fixtures
 
 **Deliverable:** ODE is slimmer, and any improvements to opticaldiscs immediately
 benefit ODE.

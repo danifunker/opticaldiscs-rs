@@ -165,6 +165,23 @@ impl DiscTOC {
 
         format!("{disc_id:08x}")
     }
+
+    /// Generate a TOC string for MusicBrainz fuzzy lookup.
+    ///
+    /// Format: `first_track+track_count+leadout+offset1+offset2+…`
+    ///
+    /// Example: `"1+12+267257+150+22767+41887+…"`
+    pub fn to_toc_string(&self) -> String {
+        let mut parts = vec![
+            self.first_track.to_string(),
+            self.track_count().to_string(),
+            self.lead_out.to_string(),
+        ];
+        for offset in &self.track_offsets {
+            parts.push(offset.to_string());
+        }
+        parts.join("+")
+    }
 }
 
 // ── MSF conversion helpers ────────────────────────────────────────────────────

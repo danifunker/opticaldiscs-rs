@@ -23,10 +23,13 @@
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
+use crate::apm::find_hfs_partition_offset;
 use crate::bincue::parse_cue_tracks;
 use crate::chd::open_chd;
 use crate::error::{OpticaldiscsError, Result};
 use crate::formats::{DiscFormat, FilesystemType};
+use crate::hfs::MasterDirectoryBlock;
+use crate::hfsplus::{extract_volume_name_from_catalog, HfsPlusVolumeHeader};
 use crate::iso9660::PrimaryVolumeDescriptor;
 use crate::sector_reader::{BinCueSectorReader, ChdSectorReader, IsoSectorReader, SectorReader};
 
@@ -114,6 +117,10 @@ pub struct DiscImageInfo {
     pub volume_label: Option<String>,
     /// Parsed ISO 9660 Primary Volume Descriptor, if present.
     pub pvd: Option<PrimaryVolumeDescriptor>,
+    /// HFS Master Directory Block, if the disc is an HFS volume.
+    pub hfs_mdb: Option<MasterDirectoryBlock>,
+    /// HFS+ Volume Header, if the disc is an HFS+ volume.
+    pub hfsplus_header: Option<HfsPlusVolumeHeader>,
     /// Disc Table of Contents, if the format provides track metadata.
     ///
     /// Present for BIN/CUE and CHD images; `None` for plain ISO files.
@@ -186,7 +193,11 @@ impl DiscImageInfo {
 
         let mut reader = BinCueSectorReader::open(&data_track)?;
         let (filesystem, pvd) = probe_filesystem(&mut reader)?;
-        let volume_label = pvd.as_ref().map(|p| p.volume_id.clone());
+        let (hfs_mdb, hfsplus_header, hfs_volume_label) = probe_hfs_detail(&mut reader, filesystem);
+        let volume_label = pvd
+            .as_ref()
+            .map(|p| p.volume_id.clone())
+            .or(hfs_volume_label);
 
         #[cfg(feature = "toc")]
         let toc = build_bincue_toc(&tracks);
@@ -197,6 +208,8 @@ impl DiscImageInfo {
             filesystem,
             volume_label,
             pvd,
+            hfs_mdb,
+            hfsplus_header,
             #[cfg(feature = "toc")]
             toc,
         })
@@ -206,7 +219,11 @@ impl DiscImageInfo {
     fn probe_iso(path: &Path) -> Result<Self> {
         let mut reader = IsoSectorReader::new(path)?;
         let (filesystem, pvd) = probe_filesystem(&mut reader)?;
-        let volume_label = pvd.as_ref().map(|p| p.volume_id.clone());
+        let (hfs_mdb, hfsplus_header, hfs_volume_label) = probe_hfs_detail(&mut reader, filesystem);
+        let volume_label = pvd
+            .as_ref()
+            .map(|p| p.volume_id.clone())
+            .or(hfs_volume_label);
 
         Ok(Self {
             path: path.to_path_buf(),
@@ -214,6 +231,8 @@ impl DiscImageInfo {
             filesystem,
             volume_label,
             pvd,
+            hfs_mdb,
+            hfsplus_header,
             // Plain ISO files carry no track metadata.
             #[cfg(feature = "toc")]
             toc: None,
@@ -241,6 +260,8 @@ impl DiscImageInfo {
                     filesystem: FilesystemType::Unknown,
                     volume_label: None,
                     pvd: None,
+                    hfs_mdb: None,
+                    hfsplus_header: None,
                     #[cfg(feature = "toc")]
                     toc,
                 });
@@ -249,7 +270,11 @@ impl DiscImageInfo {
 
         let mut reader = ChdSectorReader::open(path, &data_track)?;
         let (filesystem, pvd) = probe_filesystem(&mut reader)?;
-        let volume_label = pvd.as_ref().map(|p| p.volume_id.clone());
+        let (hfs_mdb, hfsplus_header, hfs_volume_label) = probe_hfs_detail(&mut reader, filesystem);
+        let volume_label = pvd
+            .as_ref()
+            .map(|p| p.volume_id.clone())
+            .or(hfs_volume_label);
 
         Ok(Self {
             path: path.to_path_buf(),
@@ -257,6 +282,8 @@ impl DiscImageInfo {
             filesystem,
             volume_label,
             pvd,
+            hfs_mdb,
+            hfsplus_header,
             #[cfg(feature = "toc")]
             toc,
         })
@@ -331,6 +358,42 @@ fn build_chd_toc(tracks: &[crate::chd::ChdTrack]) -> Option<crate::toc::DiscTOC>
 }
 
 // ── Internal filesystem probe ─────────────────────────────────────────────────
+
+/// Parse HFS or HFS+ metadata structs and extract the volume label.
+///
+/// Called after `probe_filesystem` to fully read the MDB / volume header when
+/// an HFS or HFS+ filesystem has been detected.  Returns
+/// `(hfs_mdb, hfsplus_header, volume_label)`.
+fn probe_hfs_detail(
+    reader: &mut dyn SectorReader,
+    filesystem: FilesystemType,
+) -> (
+    Option<MasterDirectoryBlock>,
+    Option<HfsPlusVolumeHeader>,
+    Option<String>,
+) {
+    let partition_offset = find_hfs_partition_offset(reader).unwrap_or(0);
+
+    match filesystem {
+        FilesystemType::Hfs => match MasterDirectoryBlock::read_from(reader, partition_offset) {
+            Ok(mdb) => {
+                let label = mdb.volume_name.clone();
+                (Some(mdb), None, Some(label))
+            }
+            Err(_) => (None, None, None),
+        },
+        FilesystemType::HfsPlus => match HfsPlusVolumeHeader::read_from(reader, partition_offset) {
+            Ok(vh) => {
+                let label = extract_volume_name_from_catalog(reader, partition_offset)
+                    .ok()
+                    .flatten();
+                (None, Some(vh), label)
+            }
+            Err(_) => (None, None, None),
+        },
+        _ => (None, None, None),
+    }
+}
 
 /// Probe the filesystem type and extract a PVD if present.
 ///

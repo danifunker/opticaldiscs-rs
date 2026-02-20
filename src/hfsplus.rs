@@ -42,6 +42,10 @@ pub struct HfsPlusVolumeHeader {
     pub total_blocks: u32,
     /// Number of free allocation blocks.
     pub free_blocks: u32,
+    /// Number of files on the volume.
+    pub file_count: u32,
+    /// Number of folders on the volume.
+    pub folder_count: u32,
     /// Start block of the catalog file's first extent (in allocation blocks).
     pub catalog_start_block: u32,
     /// Number of allocation blocks in the catalog file's first extent.
@@ -70,6 +74,10 @@ impl HfsPlusVolumeHeader {
 
         // Bytes 2–3: version (u16 BE)
         let version = u16::from_be_bytes([hdr[2], hdr[3]]);
+        // Bytes 32–35: fileCount (u32 BE)
+        let file_count = u32::from_be_bytes([hdr[32], hdr[33], hdr[34], hdr[35]]);
+        // Bytes 36–39: folderCount (u32 BE)
+        let folder_count = u32::from_be_bytes([hdr[36], hdr[37], hdr[38], hdr[39]]);
         // Bytes 40–43: block_size (u32 BE)
         let block_size = u32::from_be_bytes([hdr[40], hdr[41], hdr[42], hdr[43]]);
         // Bytes 44–47: total_blocks (u32 BE)
@@ -87,6 +95,8 @@ impl HfsPlusVolumeHeader {
             block_size,
             total_blocks,
             free_blocks,
+            file_count,
+            folder_count,
             catalog_start_block,
             catalog_block_count,
         })
