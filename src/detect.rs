@@ -28,9 +28,7 @@ use crate::chd::open_chd;
 use crate::error::{OpticaldiscsError, Result};
 use crate::formats::{DiscFormat, FilesystemType};
 use crate::iso9660::PrimaryVolumeDescriptor;
-use crate::sector_reader::{
-    BinCueSectorReader, ChdSectorReader, IsoSectorReader, SectorReader, SECTOR_SIZE,
-};
+use crate::sector_reader::{BinCueSectorReader, ChdSectorReader, IsoSectorReader, SectorReader};
 
 /// CHD magic bytes at offset 0.
 const CHD_MAGIC: &[u8; 8] = b"MComprHD";
@@ -359,22 +357,18 @@ pub(crate) fn probe_filesystem(
         }
     }
 
-    // ── Check for Apple Partition Map (DDM signature "ER" = 0x4552) ─────────
-    // An APM disc may have HFS inside; flag it as HFS for now.
-    // Full APM parsing is done in Phase 8.
-    if let Ok(ddm) = reader.read_bytes(0, 2) {
-        if u16::from_be_bytes([ddm[0], ddm[1]]) == 0x4552 {
-            // Peek at byte 1024 through sector math
-            let sector0 = reader.read_sector(0)?;
-            if sector0.len() >= SECTOR_SIZE as usize {
-                // HFS MDB / HFS+ VH are at physical byte 1024
-                let hfs_bytes = reader.read_bytes(1024, 2).unwrap_or_default();
-                if hfs_bytes.len() == 2 {
-                    let s = u16::from_be_bytes([hfs_bytes[0], hfs_bytes[1]]);
-                    if s == 0x4244 {
-                        return Ok((FilesystemType::Hfs, None));
-                    } else if s == 0x482B || s == 0x4858 {
-                        return Ok((FilesystemType::HfsPlus, None));
+    // ── Try Apple Partition Map (DDM signature "ER" = 0x4552) ───────────────
+    // Parse the partition map to find the HFS partition byte offset, then
+    // check the HFS MDB / HFS+ VH signature at partition_offset + 1024.
+    if let Ok(entries) = crate::apm::parse_partition_map(reader) {
+        if let Some(partition) = entries.iter().find(|e| e.is_hfs()) {
+            let offset = partition.start_block as u64 * 512;
+            if let Ok(sig_bytes) = reader.read_bytes(offset + 1024, 2) {
+                if sig_bytes.len() == 2 {
+                    match u16::from_be_bytes([sig_bytes[0], sig_bytes[1]]) {
+                        0x4244 => return Ok((FilesystemType::Hfs, None)),
+                        0x482B | 0x4858 => return Ok((FilesystemType::HfsPlus, None)),
+                        _ => {}
                     }
                 }
             }

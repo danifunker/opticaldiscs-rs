@@ -353,12 +353,12 @@ mod tests {
         let mut dir_off = 0usize;
 
         // Helper: append a directory record.
-        let mut append_rec = |buf: &mut Vec<u8>,
-                              off: &mut usize,
-                              extent_lba: u32,
-                              data_len: u32,
-                              flags: u8,
-                              id: &[u8]| {
+        let append_rec = |buf: &mut Vec<u8>,
+                          off: &mut usize,
+                          extent_lba: u32,
+                          data_len: u32,
+                          flags: u8,
+                          id: &[u8]| {
             let id_len = id.len();
             let rec_len = 33 + id_len;
             let rec_len = if rec_len % 2 == 0 {

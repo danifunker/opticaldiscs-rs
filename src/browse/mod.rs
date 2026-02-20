@@ -18,6 +18,8 @@ pub mod hfsplus;
 
 pub use entry::{EntryType, FileEntry};
 pub use filesystem::{Filesystem, FilesystemError};
+pub use hfs::HfsFilesystem;
+pub use hfsplus::HfsPlusFilesystem;
 pub use iso9660::Iso9660Filesystem;
 
 use crate::detect::DiscImageInfo;
@@ -30,13 +32,13 @@ use crate::sector_reader::SectorReader;
 /// Open a browsable filesystem for `info`.
 ///
 /// Creates the appropriate [`SectorReader`] for the container format (ISO,
-/// BIN/CUE, or CHD), then wraps it in the right [`Filesystem`]
-/// implementation for the on-disc filesystem type.
+/// BIN/CUE, or CHD), then wraps it in the right [`Filesystem`] implementation
+/// for the on-disc filesystem type.
 ///
-/// Currently supported filesystem types:
+/// Supported filesystem types:
 /// - [`FilesystemType::Iso9660`] — all three container formats
-///
-/// HFS and HFS+ support will be added in Phase 8.
+/// - [`FilesystemType::Hfs`] — HFS (classic Mac CDs)
+/// - [`FilesystemType::HfsPlus`] — HFS+ (Mac OS X CDs/DVDs)
 ///
 /// # Errors
 ///
@@ -45,11 +47,25 @@ use crate::sector_reader::SectorReader;
 /// or [`FilesystemError::Parse`] if the disc cannot be opened or the
 /// filesystem header is malformed.
 pub fn open_disc_filesystem(info: &DiscImageInfo) -> Result<Box<dyn Filesystem>, FilesystemError> {
-    let reader = open_sector_reader(info)?;
+    let mut reader = open_sector_reader(info)?;
 
     match info.filesystem {
         FilesystemType::Iso9660 => Ok(Box::new(Iso9660Filesystem::new(reader)?)),
-        // HFS / HFS+ support is Phase 8.
+
+        FilesystemType::Hfs => {
+            // Try APM to find the HFS partition offset; fall back to 0 for
+            // non-APM images where the HFS filesystem starts at the disc root.
+            let partition_offset =
+                crate::apm::find_hfs_partition_offset(reader.as_mut()).unwrap_or(0);
+            Ok(Box::new(HfsFilesystem::new(reader, partition_offset)?))
+        }
+
+        FilesystemType::HfsPlus => {
+            let partition_offset =
+                crate::apm::find_hfs_partition_offset(reader.as_mut()).unwrap_or(0);
+            Ok(Box::new(HfsPlusFilesystem::new(reader, partition_offset)?))
+        }
+
         _ => Err(FilesystemError::Unsupported),
     }
 }

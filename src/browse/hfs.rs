@@ -1,5 +1,611 @@
 //! HFS (classic Mac) filesystem browser.
 //!
-//! See PLAN.md Phase 8 for implementation details.
+//! Provides [`HfsFilesystem`], which implements the [`Filesystem`] trait for
+//! browsing directories and reading files on HFS-formatted disc images.
+//!
+//! The implementation walks the HFS catalog B-tree by following leaf-node
+//! linked-list pointers, parsing HFS catalog key / record pairs.
+//!
+//! See PLAN.md Phase 8.4 for implementation details.
 
-// TODO: implement HfsFilesystem in Phase 8
+use super::entry::{EntryType, FileEntry};
+use super::filesystem::{Filesystem, FilesystemError};
+use crate::hfs::{mac_roman_to_string, MasterDirectoryBlock};
+use crate::sector_reader::SectorReader;
+
+// ── HFS B-tree / catalog constants ───────────────────────────────────────────
+
+/// Root directory CNID (always 2 in HFS).
+const HFS_ROOT_DIR_ID: u32 = 2;
+
+/// Catalog record type: folder.
+const HFS_FOLDER_RECORD: i8 = 1;
+/// Catalog record type: file.
+const HFS_FILE_RECORD: i8 = 2;
+
+// ── Public type ───────────────────────────────────────────────────────────────
+
+/// HFS filesystem browser.
+///
+/// Created by [`open_disc_filesystem`][crate::browse::open_disc_filesystem]
+/// when the detected filesystem type is [`FilesystemType::Hfs`][crate::formats::FilesystemType::Hfs].
+pub struct HfsFilesystem {
+    reader: Box<dyn SectorReader>,
+    /// Byte offset of the HFS partition from the disc start (0 for non-APM images).
+    partition_offset: u64,
+    /// Allocation block size in bytes.
+    alloc_block_size: u32,
+    /// First allocation block sector number (in 512-byte sectors from partition start).
+    alloc_block_start: u32,
+    /// Start block of the catalog file's first extent (in allocation blocks).
+    catalog_first_block: u16,
+    /// B-tree node size in bytes.
+    node_size: u16,
+    /// Node number of the first leaf node in the catalog B-tree.
+    first_leaf_node: u32,
+    /// Volume name decoded from the MDB.
+    volume_name: String,
+}
+
+impl HfsFilesystem {
+    /// Open an HFS filesystem.
+    ///
+    /// Reads the MDB at `partition_offset + 1024`, then reads the catalog
+    /// B-tree header to locate the first leaf node.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FilesystemError::Parse`] if the MDB or B-tree header is
+    /// malformed, or [`FilesystemError::Io`] on read failure.
+    pub fn new(
+        mut reader: Box<dyn SectorReader>,
+        partition_offset: u64,
+    ) -> Result<Self, FilesystemError> {
+        let mdb = MasterDirectoryBlock::read_from(reader.as_mut(), partition_offset)
+            .map_err(hfs_disc_err)?;
+
+        // Byte offset of the first allocation block from the disc start.
+        let first_alloc_byte = partition_offset + mdb.alloc_block_start as u64 * 512;
+
+        // Byte offset of the catalog file.
+        let catalog_offset =
+            first_alloc_byte + mdb.catalog_start_block as u64 * mdb.alloc_block_size as u64;
+
+        // Read the B-tree header node (node 0) — 256 bytes suffices.
+        let btree_hdr = reader
+            .read_bytes(catalog_offset, 256)
+            .map_err(hfs_disc_err)?;
+
+        // B-tree header node layout:
+        //   [0..14]  node descriptor (14 bytes)
+        //   [14..] B-tree header record
+        //
+        // Relevant fields (offsets from node start, matching ODE hfs_fs.rs):
+        //   [24..28] first_leaf_node (u32 BE)
+        //   [32..34] node_size (u16 BE)
+        let first_leaf_node =
+            u32::from_be_bytes([btree_hdr[24], btree_hdr[25], btree_hdr[26], btree_hdr[27]]);
+        let node_size = u16::from_be_bytes([btree_hdr[32], btree_hdr[33]]);
+
+        Ok(Self {
+            reader,
+            partition_offset,
+            alloc_block_size: mdb.alloc_block_size,
+            alloc_block_start: mdb.alloc_block_start as u32,
+            catalog_first_block: mdb.catalog_start_block,
+            node_size,
+            first_leaf_node,
+            volume_name: mdb.volume_name,
+        })
+    }
+
+    // ── B-tree helpers ────────────────────────────────────────────────────────
+
+    /// Byte offset of the start of the catalog file.
+    fn catalog_offset(&self) -> u64 {
+        self.partition_offset
+            + self.alloc_block_start as u64 * 512
+            + self.catalog_first_block as u64 * self.alloc_block_size as u64
+    }
+
+    /// Read a single B-tree node by node number.
+    fn read_node(&mut self, node_num: u32) -> Result<Vec<u8>, FilesystemError> {
+        let offset = self.catalog_offset() + node_num as u64 * self.node_size as u64;
+        self.reader
+            .read_bytes(offset, self.node_size as usize)
+            .map_err(hfs_disc_err)
+    }
+
+    // ── Directory listing ─────────────────────────────────────────────────────
+
+    /// Walk all leaf nodes and collect entries whose key `parent_id` matches
+    /// `parent_cnid`.
+    fn list_by_id(
+        &mut self,
+        parent_cnid: u32,
+        parent_path: &str,
+    ) -> Result<Vec<FileEntry>, FilesystemError> {
+        let mut entries = Vec::new();
+        let mut current = self.first_leaf_node;
+        let mut attempts = 0u32;
+        const MAX: u32 = 10_000;
+
+        while current != 0 && attempts < MAX {
+            attempts += 1;
+            let node = self.read_node(current)?;
+
+            // Node descriptor
+            let next = u32::from_be_bytes([node[0], node[1], node[2], node[3]]);
+            let kind = node[8] as i8;
+            let num_rec = u16::from_be_bytes([node[10], node[11]]);
+
+            if kind != -1 {
+                current = next;
+                continue;
+            }
+
+            process_leaf_node(
+                &node,
+                self.node_size as usize,
+                num_rec,
+                parent_cnid,
+                parent_path,
+                &mut entries,
+            );
+            current = next;
+        }
+
+        // Directories first, then sort by name (case-insensitive).
+        entries.sort_by(|a, b| match (a.entry_type, b.entry_type) {
+            (EntryType::Directory, EntryType::File) => std::cmp::Ordering::Less,
+            (EntryType::File, EntryType::Directory) => std::cmp::Ordering::Greater,
+            _ => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
+        });
+
+        Ok(entries)
+    }
+
+    // ── File reading ──────────────────────────────────────────────────────────
+
+    /// Find the catalog file record for a given CNID and return its extents.
+    fn find_file_extents(&mut self, cnid: u32) -> Result<Vec<HfsExtent>, FilesystemError> {
+        let mut current = self.first_leaf_node;
+        let mut attempts = 0u32;
+        const MAX: u32 = 10_000;
+
+        while current != 0 && attempts < MAX {
+            attempts += 1;
+            let node = self.read_node(current)?;
+
+            let next = u32::from_be_bytes([node[0], node[1], node[2], node[3]]);
+            let kind = node[8] as i8;
+            let num_rec = u16::from_be_bytes([node[10], node[11]]);
+
+            if kind != -1 {
+                current = next;
+                continue;
+            }
+
+            if let Some(extents) =
+                search_node_for_file(&node, self.node_size as usize, num_rec, cnid)
+            {
+                return Ok(extents);
+            }
+
+            current = next;
+        }
+
+        Err(FilesystemError::NotFound(format!(
+            "File CNID {cnid} not found in catalog"
+        )))
+    }
+
+    /// Read a byte range from a list of HFS extents.
+    fn read_extents_range(
+        &mut self,
+        extents: &[HfsExtent],
+        range_offset: u64,
+        range_length: usize,
+    ) -> Result<Vec<u8>, FilesystemError> {
+        let first_alloc_offset = self.partition_offset + self.alloc_block_start as u64 * 512;
+
+        let mut result = Vec::with_capacity(range_length);
+        let mut logical_pos: u64 = 0;
+        let end = range_offset + range_length as u64;
+
+        for ext in extents {
+            if ext.block_count == 0 {
+                break;
+            }
+            let ext_size = ext.block_count as u64 * self.alloc_block_size as u64;
+            let ext_end = logical_pos + ext_size;
+
+            if ext_end <= range_offset {
+                logical_pos = ext_end;
+                continue;
+            }
+            if logical_pos >= end {
+                break;
+            }
+
+            let read_start = range_offset.max(logical_pos);
+            let read_end = end.min(ext_end);
+            let read_len = (read_end - read_start) as usize;
+            let offset_in_ext = read_start - logical_pos;
+
+            let phys_off = first_alloc_offset
+                + ext.start_block as u64 * self.alloc_block_size as u64
+                + offset_in_ext;
+
+            let chunk = self
+                .reader
+                .read_bytes(phys_off, read_len)
+                .map_err(hfs_disc_err)?;
+            result.extend_from_slice(&chunk);
+
+            logical_pos = ext_end;
+        }
+
+        Ok(result)
+    }
+}
+
+impl Filesystem for HfsFilesystem {
+    fn root(&mut self) -> Result<FileEntry, FilesystemError> {
+        Ok(FileEntry::root(HFS_ROOT_DIR_ID as u64))
+    }
+
+    fn list_directory(&mut self, entry: &FileEntry) -> Result<Vec<FileEntry>, FilesystemError> {
+        if entry.entry_type != EntryType::Directory {
+            return Err(FilesystemError::NotADirectory(entry.path.clone()));
+        }
+        let cnid = entry.location as u32;
+        self.list_by_id(cnid, &entry.path)
+    }
+
+    fn read_file(&mut self, entry: &FileEntry) -> Result<Vec<u8>, FilesystemError> {
+        if entry.entry_type != EntryType::File {
+            return Err(FilesystemError::NotADirectory(format!(
+                "{} is not a file",
+                entry.path
+            )));
+        }
+        let extents = self.find_file_extents(entry.location as u32)?;
+        self.read_extents_range(&extents, 0, entry.size as usize)
+    }
+
+    fn read_file_range(
+        &mut self,
+        entry: &FileEntry,
+        offset: u64,
+        length: usize,
+    ) -> Result<Vec<u8>, FilesystemError> {
+        if entry.entry_type != EntryType::File {
+            return Err(FilesystemError::NotADirectory(format!(
+                "{} is not a file",
+                entry.path
+            )));
+        }
+        let actual_len = length.min(entry.size.saturating_sub(offset) as usize);
+        if actual_len == 0 {
+            return Ok(Vec::new());
+        }
+        let extents = self.find_file_extents(entry.location as u32)?;
+        self.read_extents_range(&extents, offset, actual_len)
+    }
+
+    fn volume_name(&self) -> Option<&str> {
+        if self.volume_name.is_empty() {
+            None
+        } else {
+            Some(&self.volume_name)
+        }
+    }
+}
+
+// ── Internal B-tree parsing helpers ──────────────────────────────────────────
+
+/// An HFS extent descriptor: start block and block count (both in allocation blocks).
+#[derive(Debug, Clone, Copy)]
+struct HfsExtent {
+    start_block: u16,
+    block_count: u16,
+}
+
+/// Process all records in a leaf node, collecting entries with matching parent.
+fn process_leaf_node(
+    node: &[u8],
+    node_size: usize,
+    num_rec: u16,
+    parent_cnid: u32,
+    parent_path: &str,
+    entries: &mut Vec<FileEntry>,
+) {
+    let offsets_base = node_size - 2;
+
+    for i in 0..num_rec {
+        let off_pos = offsets_base - i as usize * 2;
+        if off_pos + 2 > node.len() {
+            continue;
+        }
+        let rec_off = u16::from_be_bytes([node[off_pos], node[off_pos + 1]]) as usize;
+        if rec_off + 8 > node.len() {
+            continue;
+        }
+
+        // HFS catalog key layout:
+        //   [0]      key_len (u8): length of key data (bytes 1..key_len inclusive)
+        //   [1]      reserved (u8)
+        //   [2..5]   parent_id (u32 BE)
+        //   [6]      name_len (u8): number of Mac Roman bytes
+        //   [7..]    name bytes (Mac Roman)
+        let key_len = node[rec_off] as usize;
+        if key_len < 6 || rec_off + 1 + key_len > node.len() {
+            continue;
+        }
+        let pid = u32::from_be_bytes([
+            node[rec_off + 2],
+            node[rec_off + 3],
+            node[rec_off + 4],
+            node[rec_off + 5],
+        ]);
+        if pid != parent_cnid {
+            continue;
+        }
+        let name_len = node[rec_off + 6] as usize;
+        if name_len == 0 {
+            // Thread record — skip.
+            continue;
+        }
+        let name_start = rec_off + 7;
+        let name_end = name_start + name_len;
+        if name_end > node.len() {
+            continue;
+        }
+        let name = mac_roman_to_string(&node[name_start..name_end]);
+
+        // Record data starts at the first even byte after the key length byte + key data.
+        // data_off (relative to rec_off) = round_up_to_even(1 + key_len)
+        //   = (key_len + 2) & !1usize
+        let data_off = rec_off + ((key_len + 2) & !1usize);
+        if data_off + 2 > node.len() {
+            continue;
+        }
+
+        let rec_type = node[data_off] as i8;
+
+        let path = if parent_path == "/" {
+            format!("/{name}")
+        } else {
+            format!("{parent_path}/{name}")
+        };
+
+        match rec_type {
+            HFS_FOLDER_RECORD => {
+                // Folder record: dir_id at data_off + 6 (u32 BE).
+                if data_off + 10 > node.len() {
+                    continue;
+                }
+                let dir_id = u32::from_be_bytes([
+                    node[data_off + 6],
+                    node[data_off + 7],
+                    node[data_off + 8],
+                    node[data_off + 9],
+                ]);
+                entries.push(FileEntry::new_directory(name, path, dir_id as u64));
+            }
+            HFS_FILE_RECORD => {
+                // File record:
+                //   data_off + 20: file_id (u32 BE)
+                //   data_off + 26: logical_size (u32 BE)
+                if data_off + 30 > node.len() {
+                    continue;
+                }
+                let file_id = u32::from_be_bytes([
+                    node[data_off + 20],
+                    node[data_off + 21],
+                    node[data_off + 22],
+                    node[data_off + 23],
+                ]);
+                let logical_size = u32::from_be_bytes([
+                    node[data_off + 26],
+                    node[data_off + 27],
+                    node[data_off + 28],
+                    node[data_off + 29],
+                ]);
+                entries.push(FileEntry::new_file(
+                    name,
+                    path,
+                    logical_size as u64,
+                    file_id as u64,
+                ));
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Search a single B-tree leaf node for a file record whose `file_id` matches
+/// `target_cnid`.  Returns the three catalog extents on success.
+fn search_node_for_file(
+    node: &[u8],
+    node_size: usize,
+    num_rec: u16,
+    target_cnid: u32,
+) -> Option<Vec<HfsExtent>> {
+    let offsets_base = node_size - 2;
+
+    for i in 0..num_rec {
+        let off_pos = offsets_base - i as usize * 2;
+        if off_pos + 2 > node.len() {
+            continue;
+        }
+        let rec_off = u16::from_be_bytes([node[off_pos], node[off_pos + 1]]) as usize;
+        if rec_off + 8 > node.len() {
+            continue;
+        }
+
+        let key_len = node[rec_off] as usize;
+        if key_len < 6 {
+            continue;
+        }
+
+        let data_off = rec_off + ((key_len + 2) & !1usize);
+        if data_off + 2 > node.len() {
+            continue;
+        }
+
+        let rec_type = node[data_off] as i8;
+        if rec_type != HFS_FILE_RECORD {
+            continue;
+        }
+
+        // file_id at data_off + 20 (u32 BE)
+        if data_off + 24 > node.len() {
+            continue;
+        }
+        let file_id = u32::from_be_bytes([
+            node[data_off + 20],
+            node[data_off + 21],
+            node[data_off + 22],
+            node[data_off + 23],
+        ]);
+        if file_id != target_cnid {
+            continue;
+        }
+
+        // Extents at data_off + 74: three HfsExtent records (4 bytes each).
+        if data_off + 74 + 12 > node.len() {
+            continue;
+        }
+        let extents = (0..3)
+            .map(|j| {
+                let base = data_off + 74 + j * 4;
+                HfsExtent {
+                    start_block: u16::from_be_bytes([node[base], node[base + 1]]),
+                    block_count: u16::from_be_bytes([node[base + 2], node[base + 3]]),
+                }
+            })
+            .collect();
+
+        return Some(extents);
+    }
+
+    None
+}
+
+// ── Error conversion ──────────────────────────────────────────────────────────
+
+fn hfs_disc_err(e: crate::error::OpticaldiscsError) -> FilesystemError {
+    match e {
+        crate::error::OpticaldiscsError::Io(io) => FilesystemError::Io(io),
+        e => FilesystemError::Parse(e.to_string()),
+    }
+}
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hfs_extent_fields() {
+        let ext = HfsExtent {
+            start_block: 10,
+            block_count: 5,
+        };
+        assert_eq!(ext.start_block, 10);
+        assert_eq!(ext.block_count, 5);
+    }
+
+    #[test]
+    fn process_leaf_node_empty_returns_nothing() {
+        let node = vec![0u8; 512];
+        let mut entries = Vec::new();
+        // num_rec = 0 → no work done
+        process_leaf_node(&node, 512, 0, 2, "/", &mut entries);
+        assert!(entries.is_empty());
+    }
+
+    #[test]
+    fn process_leaf_node_wrong_parent_skips() {
+        // Build a minimal node with one folder record for parent 99, not 2.
+        let mut node = vec![0u8; 512];
+        // Record offset table at end: one record at byte 14
+        let rec_off: u16 = 14;
+        node[510] = (rec_off >> 8) as u8;
+        node[511] = (rec_off & 0xFF) as u8;
+
+        // key_len = 7: reserved(1) + parent_id(4) + name_len(1) + name(1)
+        let key_len: u8 = 7;
+        node[14] = key_len;
+        node[15] = 0; // reserved
+        node[16..20].copy_from_slice(&99u32.to_be_bytes()); // parent_id = 99 (not 2)
+        node[20] = 1; // name_len = 1
+        node[21] = b'A'; // name = "A"
+
+        let mut entries = Vec::new();
+        process_leaf_node(&node, 512, 1, 2, "/", &mut entries);
+        // parent_id mismatch → no entries
+        assert!(entries.is_empty());
+    }
+
+    #[test]
+    fn process_leaf_node_folder_record() {
+        let mut node = vec![0u8; 512];
+        // Record at byte 14
+        let rec_off: u16 = 14;
+        node[510] = (rec_off >> 8) as u8;
+        node[511] = (rec_off & 0xFF) as u8;
+
+        // key: key_len=7, reserved, parent_id=2, name_len=1, name="A"
+        node[14] = 7; // key_len
+        node[15] = 0; // reserved
+        node[16..20].copy_from_slice(&2u32.to_be_bytes()); // parent_id = 2
+        node[20] = 1; // name_len
+        node[21] = b'A'; // name = "A"
+                         // key_len=7 → data_off = 14 + ((7 + 2) & !1) = 14 + 8 = 22
+        let data_off = 22usize;
+        // Folder record: type=1 at data_off, dir_id at data_off+6
+        node[data_off] = 1; // HFS_FOLDER_RECORD
+        node[data_off + 6..data_off + 10].copy_from_slice(&42u32.to_be_bytes()); // dir_id = 42
+
+        let mut entries = Vec::new();
+        process_leaf_node(&node, 512, 1, 2, "/", &mut entries);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].name, "A");
+        assert_eq!(entries[0].path, "/A");
+        assert!(entries[0].is_directory());
+        assert_eq!(entries[0].location, 42);
+    }
+
+    #[test]
+    fn process_leaf_node_file_record() {
+        let mut node = vec![0u8; 512];
+        let rec_off: u16 = 14;
+        node[510] = (rec_off >> 8) as u8;
+        node[511] = (rec_off & 0xFF) as u8;
+
+        node[14] = 9; // key_len: reserved(1)+parent_id(4)+name_len(1)+name(3)
+        node[15] = 0;
+        node[16..20].copy_from_slice(&2u32.to_be_bytes()); // parent_id = 2
+        node[20] = 3; // name_len = 3
+        node[21..24].copy_from_slice(b"foo"); // name = "foo"
+                                              // key_len=9 → data_off = 14 + ((9 + 2) & !1) = 14 + 10 = 24
+        let data_off = 24usize;
+        node[data_off] = 2; // HFS_FILE_RECORD
+                            // file_id at data_off + 20
+        node[data_off + 20..data_off + 24].copy_from_slice(&77u32.to_be_bytes());
+        // logical_size at data_off + 26
+        node[data_off + 26..data_off + 30].copy_from_slice(&1024u32.to_be_bytes());
+
+        let mut entries = Vec::new();
+        process_leaf_node(&node, 512, 1, 2, "/", &mut entries);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].name, "foo");
+        assert!(entries[0].is_file());
+        assert_eq!(entries[0].size, 1024);
+        assert_eq!(entries[0].location, 77);
+    }
+}

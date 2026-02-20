@@ -392,7 +392,7 @@ fn write_test_iso_with_files(
     let mut dir = vec![0u8; SECTOR];
     let mut dir_off = 0usize;
 
-    let mut append_rec =
+    let append_rec =
         |buf: &mut Vec<u8>, off: &mut usize, lba: u32, len: u32, flags: u8, id: &[u8]| {
             let id_len = id.len();
             let rec_len = 33 + id_len;

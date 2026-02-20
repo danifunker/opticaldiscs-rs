@@ -403,39 +403,44 @@ for ISO images (plain ISO, BIN/CUE, and CHD containers).
 **Goal:** Browse directories on Apple HFS and HFS+ disc images (classic Mac CDs).
 Ported from `ODE/src/disc/browse/hfs_fs.rs` and `hfsplus_fs.rs`.
 
-- [ ] **8.1** `src/apm.rs`
+- [x] **8.1** `src/apm.rs`
   - `PartitionEntry` struct: name, partition_type, start_block, block_count
   - `parse_partition_map(reader)` — reads DDM + all PM entries
   - `find_hfs_partition_offset(reader)` — locates first HFS/HFS+ partition byte offset
-  - `PartitionEntry::is_hfs()` — checks `Apple_HFS`, `Apple_HFSX`, `Apple_HFS+` type strings
+  - `PartitionEntry::is_hfs()` — checks `Apple_HFS*` type strings
 
-- [ ] **8.2** `src/hfs.rs` — `MasterDirectoryBlock`
+- [x] **8.2** `src/hfs.rs` — `MasterDirectoryBlock`
   - Reads from byte offset 1024
   - Validates signature 0x4244 (`BD`)
-  - Extracts: volume_name, file_count, folder_count, creation_date
+  - Extracts: volume_name, file_count, creation_date, alloc_block_size/start, catalog extents
   - `MasterDirectoryBlock::read_from(reader, partition_offset)`
+  - `mac_roman_to_string` helper + `MAC_ROMAN_TABLE` (128-char lookup)
 
-- [ ] **8.3** `src/hfsplus.rs` — `HfsPlusVolumeHeader`
+- [x] **8.3** `src/hfsplus.rs` — `HfsPlusVolumeHeader`
   - Reads from byte offset 1024
   - Validates signature 0x482B (`H+`) or 0x4858 (`HX`)
   - Extracts: version, block_size, total_blocks, free_blocks, catalog_file extents
   - `extract_volume_name_from_catalog(reader, partition_offset)` — parses B-tree thread
-    record for root CNID (2)
+    record for root CNID (2), returns UTF-16 BE volume name
 
-- [ ] **8.4** `src/browse/hfs.rs` — `HfsFilesystem`
-  - Constructor: `new(reader, partition_offset, disc_info)`
-  - Implements `Filesystem` trait: `root()`, `list_directory()`, `read_file()`
+- [x] **8.4** `src/browse/hfs.rs` — `HfsFilesystem`
+  - Constructor: `new(reader, partition_offset)` — no disc_info needed; reads name from MDB
+  - Implements `Filesystem` trait: `root()`, `list_directory()`, `read_file()`, `read_file_range()`
+  - MacRoman catalog key/record parsing; HFS extent reading
 
-- [ ] **8.5** `src/browse/hfsplus.rs` — `HfsPlusFilesystem`
-  - Constructor: `new(reader, partition_offset, disc_info)`
+- [x] **8.5** `src/browse/hfsplus.rs` — `HfsPlusFilesystem`
+  - Constructor: `new(reader, partition_offset)` — volume name from B-tree thread record
   - Implements `Filesystem` trait
+  - HFS+ catalog key (UTF-16 BE) and fork data (8 extents × u32) parsing
 
-- [ ] **8.6** Update `src/browse/mod.rs` — `open_disc_filesystem()` routes to HFS/HFS+
-  - Calls `find_hfs_partition_offset()` before creating HFS filesystem
+- [x] **8.6** Update `src/browse/mod.rs` — `open_disc_filesystem()` routes to HFS/HFS+
+  - Calls `find_hfs_partition_offset()` (falls back to 0 for non-APM images)
 
-- [ ] **8.7** Update `src/detect.rs` — APM detection feeds into `open_disc_filesystem()`
+- [x] **8.7** Update `src/detect.rs` — APM detection uses `parse_partition_map()`
+  - Replaces naive byte-1024 check with proper partition map traversal
 
-- [ ] **8.8** Tests: list root of an HFS and/or HFS+ test fixture
+- [x] **8.8** Tests: 84 unit + 21 integration passing; APM/MDB/VH/B-tree parsing covered
+  - No HFS/HFS+ fixture files available; parsing logic tested synthetically per module
 
 **Deliverable:** Classic Mac CDs fully browsable.
 
