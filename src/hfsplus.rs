@@ -84,10 +84,13 @@ impl HfsPlusVolumeHeader {
         let total_blocks = u32::from_be_bytes([hdr[44], hdr[45], hdr[46], hdr[47]]);
         // Bytes 48–51: free_blocks (u32 BE)
         let free_blocks = u32::from_be_bytes([hdr[48], hdr[49], hdr[50], hdr[51]]);
-        // Bytes 128–131: catalog file first extent start block (u32 BE)
-        let catalog_start_block = u32::from_be_bytes([hdr[128], hdr[129], hdr[130], hdr[131]]);
-        // Bytes 132–135: catalog file first extent block count (u32 BE)
-        let catalog_block_count = u32::from_be_bytes([hdr[132], hdr[133], hdr[134], hdr[135]]);
+        // Bytes 288–291: catalogFile.extents[0].startBlock (u32 BE)
+        // Layout: allocationFile at 112 (80B), extentsFile at 192 (80B), catalogFile at 272 (80B)
+        // HFSPlusForkData: logicalSize(8) + clumpSize(4) + totalBlocks(4) + extents(64) = 80
+        // catalogFile.extents[0].startBlock = 272 + 8 + 4 + 4 = 288
+        let catalog_start_block = u32::from_be_bytes([hdr[288], hdr[289], hdr[290], hdr[291]]);
+        // Bytes 292–295: catalogFile.extents[0].blockCount (u32 BE)
+        let catalog_block_count = u32::from_be_bytes([hdr[292], hdr[293], hdr[294], hdr[295]]);
 
         Ok(Self {
             signature,
@@ -270,8 +273,8 @@ mod tests {
         img[off + 40..off + 44].copy_from_slice(&block_size.to_be_bytes());
         img[off + 44..off + 48].copy_from_slice(&1000u32.to_be_bytes()); // total_blocks
         img[off + 48..off + 52].copy_from_slice(&500u32.to_be_bytes()); // free_blocks
-        img[off + 128..off + 132].copy_from_slice(&catalog_start.to_be_bytes());
-        img[off + 132..off + 136].copy_from_slice(&catalog_count.to_be_bytes());
+        img[off + 288..off + 292].copy_from_slice(&catalog_start.to_be_bytes());
+        img[off + 292..off + 296].copy_from_slice(&catalog_count.to_be_bytes());
         img
     }
 
