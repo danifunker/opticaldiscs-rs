@@ -78,8 +78,7 @@ mod imp {
                     .to_string();
 
                 // /sys/block/srN/size is 0 when no disc is present.
-                let size_str =
-                    read_sys_str(&sys_path.join("size")).unwrap_or_default();
+                let size_str = read_sys_str(&sys_path.join("size")).unwrap_or_default();
                 let is_loaded = size_str.trim().parse::<u64>().unwrap_or(0) > 0;
 
                 Some(OpticalDrive {
@@ -243,7 +242,10 @@ mod imp {
 
             let is_loaded = ok != 0;
             let display_name = if is_loaded {
-                let end = vol_name.iter().position(|&c| c == 0).unwrap_or(vol_name.len());
+                let end = vol_name
+                    .iter()
+                    .position(|&c| c == 0)
+                    .unwrap_or(vol_name.len());
                 let label = String::from_utf16_lossy(&vol_name[..end]);
                 if label.is_empty() {
                     format!("CD/DVD Drive ({letter_char}:)")
