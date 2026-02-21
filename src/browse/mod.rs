@@ -52,18 +52,20 @@ pub fn open_disc_filesystem(info: &DiscImageInfo) -> Result<Box<dyn Filesystem>,
     match info.filesystem {
         FilesystemType::Iso9660 => Ok(Box::new(Iso9660Filesystem::new(reader)?)),
 
-        FilesystemType::Hfs => {
-            // Try APM to find the HFS partition offset; fall back to 0 for
-            // non-APM images where the HFS filesystem starts at the disc root.
-            let partition_offset =
-                crate::apm::find_hfs_partition_offset(reader.as_mut()).unwrap_or(0);
-            Ok(Box::new(HfsFilesystem::new(reader, partition_offset)?))
-        }
+        FilesystemType::Hfs | FilesystemType::HfsPlus => {
+            // Use resolve_apple_hfs to get the correct offset — this handles
+            // native HFS+, embedded HFS+ (HFS wrapper), and pure HFS.
+            let raw_offset = crate::apm::find_hfs_partition_offset(reader.as_mut()).unwrap_or(0);
+            let (resolved_fs, resolved_offset) =
+                crate::detect::resolve_apple_hfs(reader.as_mut(), raw_offset);
 
-        FilesystemType::HfsPlus => {
-            let partition_offset =
-                crate::apm::find_hfs_partition_offset(reader.as_mut()).unwrap_or(0);
-            Ok(Box::new(HfsPlusFilesystem::new(reader, partition_offset)?))
+            match resolved_fs {
+                FilesystemType::Hfs => Ok(Box::new(HfsFilesystem::new(reader, raw_offset)?)),
+                FilesystemType::HfsPlus => {
+                    Ok(Box::new(HfsPlusFilesystem::new(reader, resolved_offset)?))
+                }
+                _ => Err(FilesystemError::Unsupported),
+            }
         }
 
         _ => Err(FilesystemError::Unsupported),

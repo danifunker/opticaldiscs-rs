@@ -359,6 +359,54 @@ fn build_chd_toc(tracks: &[crate::chd::ChdTrack]) -> Option<crate::toc::DiscTOC>
 
 // ── Internal filesystem probe ─────────────────────────────────────────────────
 
+/// Resolve the actual filesystem variant at a given offset.
+///
+/// Given a byte offset (either 0 for non-APM images or the APM partition
+/// offset), reads the signature at `offset + 1024` and determines the real
+/// filesystem type and the byte offset to use for reading its header.
+///
+/// Three cases are handled:
+/// - **Native HFS+** (`0x482B`/`0x4858` at offset+1024): returns
+///   `(HfsPlus, offset)`.
+/// - **Embedded HFS+** (HFS MDB `0x4244` wrapper with `drEmbedSigWord ==
+///   0x482B`): computes the embedded volume's start from the MDB's
+///   `drAlBlSt`, `drAlBlkSiz`, and `drEmbedExtent.startBlock` fields.
+/// - **Pure HFS** (`0x4244`, no embedded HFS+): returns `(Hfs, offset)`.
+pub(crate) fn resolve_apple_hfs(
+    reader: &mut dyn SectorReader,
+    partition_offset: u64,
+) -> (FilesystemType, u64) {
+    // Read 162 bytes: enough for the MDB signature, drAlBlkSiz (20),
+    // drAlBlSt (28), drEmbedSigWord (124), and drEmbedExtent (126–127).
+    let buf = match reader.read_bytes(partition_offset + 1024, 162) {
+        Ok(b) => b,
+        Err(_) => return (FilesystemType::Unknown, partition_offset),
+    };
+    let sig = u16::from_be_bytes([buf[0], buf[1]]);
+    match sig {
+        0x4244 => {
+            // HFS MDB — check for embedded HFS+ (drEmbedSigWord at MDB offset 124)
+            let embedded_sig = u16::from_be_bytes([buf[124], buf[125]]);
+            if embedded_sig == 0x482B {
+                // drAlBlkSiz  (allocation block size, bytes) at MDB offset 20 (u32 BE)
+                // drAlBlSt    (first alloc block in 512-byte sectors) at MDB offset 28 (u16 BE)
+                // drEmbedExtent.startBlock at MDB offset 126 (u16 BE)
+                let block_size = u32::from_be_bytes([buf[20], buf[21], buf[22], buf[23]]) as u64;
+                let first_alloc_block = u16::from_be_bytes([buf[28], buf[29]]) as u64;
+                let embedded_start = u16::from_be_bytes([buf[126], buf[127]]) as u64;
+                let hfsplus_offset =
+                    partition_offset + first_alloc_block * 512 + embedded_start * block_size;
+                (FilesystemType::HfsPlus, hfsplus_offset)
+            } else {
+                (FilesystemType::Hfs, partition_offset)
+            }
+        }
+        // Native HFS+ or HFSX — volume header is directly at partition_offset + 1024
+        0x482B | 0x4858 => (FilesystemType::HfsPlus, partition_offset),
+        _ => (FilesystemType::Unknown, partition_offset),
+    }
+}
+
 /// Parse HFS or HFS+ metadata structs and extract the volume label.
 ///
 /// Called after `probe_filesystem` to fully read the MDB / volume header when
@@ -372,19 +420,22 @@ fn probe_hfs_detail(
     Option<HfsPlusVolumeHeader>,
     Option<String>,
 ) {
-    let partition_offset = find_hfs_partition_offset(reader).unwrap_or(0);
+    // Use resolve_apple_hfs to get the correct offset — this handles both
+    // native HFS+, embedded HFS+ (wrapper MDB), and pure HFS.
+    let raw_offset = find_hfs_partition_offset(reader).unwrap_or(0);
+    let (_resolved_fs, resolved_offset) = resolve_apple_hfs(reader, raw_offset);
 
     match filesystem {
-        FilesystemType::Hfs => match MasterDirectoryBlock::read_from(reader, partition_offset) {
+        FilesystemType::Hfs => match MasterDirectoryBlock::read_from(reader, raw_offset) {
             Ok(mdb) => {
                 let label = mdb.volume_name.clone();
                 (Some(mdb), None, Some(label))
             }
             Err(_) => (None, None, None),
         },
-        FilesystemType::HfsPlus => match HfsPlusVolumeHeader::read_from(reader, partition_offset) {
+        FilesystemType::HfsPlus => match HfsPlusVolumeHeader::read_from(reader, resolved_offset) {
             Ok(vh) => {
-                let label = extract_volume_name_from_catalog(reader, partition_offset)
+                let label = extract_volume_name_from_catalog(reader, resolved_offset)
                     .ok()
                     .flatten();
                 (None, Some(vh), label)
@@ -410,30 +461,26 @@ pub(crate) fn probe_filesystem(
 
     // ── Try HFS / HFS+ signature at byte 1024 ───────────────────────────────
     // HFS MDB and HFS+ Volume Header both sit at byte 1024.
-    // We read 2 bytes and check the signature without fully parsing the header.
+    // Use resolve_apple_hfs to handle embedded HFS+ (HFS wrapper) correctly.
     if let Ok(sig_bytes) = reader.read_bytes(1024, 2) {
         let sig = u16::from_be_bytes([sig_bytes[0], sig_bytes[1]]);
-        match sig {
-            0x4244 => return Ok((FilesystemType::Hfs, None)), // "BD"
-            0x482B | 0x4858 => return Ok((FilesystemType::HfsPlus, None)), // "H+" / "HX"
-            _ => {}
+        if sig == 0x4244 || sig == 0x482B || sig == 0x4858 {
+            let (fs, _offset) = resolve_apple_hfs(reader, 0);
+            if fs != FilesystemType::Unknown {
+                return Ok((fs, None));
+            }
         }
     }
 
     // ── Try Apple Partition Map (DDM signature "ER" = 0x4552) ───────────────
     // Parse the partition map to find the HFS partition byte offset, then
-    // check the HFS MDB / HFS+ VH signature at partition_offset + 1024.
+    // use resolve_apple_hfs to correctly identify native vs embedded HFS+.
     if let Ok(entries) = crate::apm::parse_partition_map(reader) {
         if let Some(partition) = entries.iter().find(|e| e.is_hfs()) {
             let offset = partition.start_block as u64 * 512;
-            if let Ok(sig_bytes) = reader.read_bytes(offset + 1024, 2) {
-                if sig_bytes.len() == 2 {
-                    match u16::from_be_bytes([sig_bytes[0], sig_bytes[1]]) {
-                        0x4244 => return Ok((FilesystemType::Hfs, None)),
-                        0x482B | 0x4858 => return Ok((FilesystemType::HfsPlus, None)),
-                        _ => {}
-                    }
-                }
+            let (fs, _resolved_offset) = resolve_apple_hfs(reader, offset);
+            if fs != FilesystemType::Unknown {
+                return Ok((fs, None));
             }
         }
     }
@@ -601,5 +648,120 @@ mod tests {
             detect_filesystem(&mut reader).unwrap(),
             FilesystemType::Unknown
         );
+    }
+
+    // ── resolve_apple_hfs tests ───────────────────────────────────────────
+
+    #[test]
+    fn resolve_native_hfsplus() {
+        // HFS+ signature "H+" at byte 1024
+        let mut img = vec![0u8; 4096];
+        img[1024] = 0x48; // 'H'
+        img[1025] = 0x2B; // '+'
+        let mut reader = CursorReader(Cursor::new(img));
+        let (fs, offset) = resolve_apple_hfs(&mut reader, 0);
+        assert_eq!(fs, FilesystemType::HfsPlus);
+        assert_eq!(offset, 0);
+    }
+
+    #[test]
+    fn resolve_native_hfsx() {
+        // HFSX signature "HX" at byte 1024
+        let mut img = vec![0u8; 4096];
+        img[1024] = 0x48; // 'H'
+        img[1025] = 0x58; // 'X'
+        let mut reader = CursorReader(Cursor::new(img));
+        let (fs, offset) = resolve_apple_hfs(&mut reader, 0);
+        assert_eq!(fs, FilesystemType::HfsPlus);
+        assert_eq!(offset, 0);
+    }
+
+    #[test]
+    fn resolve_pure_hfs() {
+        // HFS MDB signature "BD" at byte 1024, no embedded HFS+
+        let mut img = vec![0u8; 4096];
+        img[1024] = 0x42; // 'B'
+        img[1025] = 0x44; // 'D'
+        let mut reader = CursorReader(Cursor::new(img));
+        let (fs, offset) = resolve_apple_hfs(&mut reader, 0);
+        assert_eq!(fs, FilesystemType::Hfs);
+        assert_eq!(offset, 0);
+    }
+
+    #[test]
+    fn resolve_embedded_hfsplus() {
+        // HFS MDB wrapper with embedded HFS+ volume
+        let mut img = vec![0u8; 1024 * 1024]; // 1 MB
+                                              // MDB signature at byte 1024
+        img[1024] = 0x42; // 'B'
+        img[1025] = 0x44; // 'D'
+                          // drAlBlkSiz at MDB offset 20 (byte 1044): 4096 bytes
+        img[1044..1048].copy_from_slice(&4096u32.to_be_bytes());
+        // drAlBlSt at MDB offset 28 (byte 1052): sector 4 (= 2048 bytes)
+        img[1052..1054].copy_from_slice(&4u16.to_be_bytes());
+        // drEmbedSigWord at MDB offset 124 (byte 1148): "H+"
+        img[1148] = 0x48;
+        img[1149] = 0x2B;
+        // drEmbedExtent.startBlock at MDB offset 126 (byte 1150): block 2
+        img[1150..1152].copy_from_slice(&2u16.to_be_bytes());
+
+        let mut reader = CursorReader(Cursor::new(img));
+        let (fs, offset) = resolve_apple_hfs(&mut reader, 0);
+        assert_eq!(fs, FilesystemType::HfsPlus);
+        // Expected: 0 + 4*512 + 2*4096 = 2048 + 8192 = 10240
+        assert_eq!(offset, 10240);
+    }
+
+    #[test]
+    fn resolve_embedded_hfsplus_with_partition_offset() {
+        // Same as above but with a non-zero APM partition offset
+        let partition_offset: u64 = 32768; // 64 * 512
+        let mut img = vec![0u8; 1024 * 1024];
+        let base = partition_offset as usize + 1024;
+        img[base] = 0x42; // 'B'
+        img[base + 1] = 0x44; // 'D'
+        img[base + 20..base + 24].copy_from_slice(&4096u32.to_be_bytes());
+        img[base + 28..base + 30].copy_from_slice(&4u16.to_be_bytes());
+        img[base + 124] = 0x48;
+        img[base + 125] = 0x2B;
+        img[base + 126..base + 128].copy_from_slice(&2u16.to_be_bytes());
+
+        let mut reader = CursorReader(Cursor::new(img));
+        let (fs, offset) = resolve_apple_hfs(&mut reader, partition_offset);
+        assert_eq!(fs, FilesystemType::HfsPlus);
+        // Expected: 32768 + 4*512 + 2*4096 = 32768 + 2048 + 8192 = 43008
+        assert_eq!(offset, 43008);
+    }
+
+    #[test]
+    fn resolve_unknown_signature() {
+        let img = vec![0u8; 4096];
+        let mut reader = CursorReader(Cursor::new(img));
+        let (fs, offset) = resolve_apple_hfs(&mut reader, 0);
+        assert_eq!(fs, FilesystemType::Unknown);
+        assert_eq!(offset, 0);
+    }
+
+    #[test]
+    fn probe_detects_embedded_hfsplus_without_apm() {
+        // Image with HFS MDB at byte 1024 wrapping an embedded HFS+ volume.
+        // probe_filesystem should detect this as HfsPlus, not Hfs.
+        let mut img = vec![0u8; 17 * SECTOR_SIZE as usize];
+        img[1024] = 0x42; // 'B'
+        img[1025] = 0x44; // 'D'
+                          // drAlBlkSiz = 2048
+        img[1044..1048].copy_from_slice(&2048u32.to_be_bytes());
+        // drAlBlSt = 0
+        img[1052..1054].copy_from_slice(&0u16.to_be_bytes());
+        // drEmbedSigWord = 0x482B
+        img[1148] = 0x48;
+        img[1149] = 0x2B;
+        // drEmbedExtent.startBlock = 0
+        img[1150..1152].copy_from_slice(&0u16.to_be_bytes());
+
+        let mut reader = CursorReader(Cursor::new(img));
+        let (fs, pvd) = probe_filesystem(&mut reader).unwrap();
+        assert_eq!(fs, FilesystemType::HfsPlus);
+        assert!(pvd.is_none());
     }
 }
