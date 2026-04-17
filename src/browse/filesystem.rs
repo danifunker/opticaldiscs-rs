@@ -45,6 +45,25 @@ pub trait Filesystem: Send {
         length: usize,
     ) -> Result<Vec<u8>, FilesystemError>;
 
+    /// Read the entire resource fork of a file.
+    ///
+    /// Returns `Ok(None)` when the filesystem does not support resource forks
+    /// (ISO 9660) or when the file has no resource fork. HFS/HFS+ return
+    /// `Ok(Some(vec![]))` for files whose resource fork exists but has zero
+    /// length — callers can use `resource_fork_size` on [`FileEntry`] to
+    /// decide whether calling this is worthwhile.
+    fn read_resource_fork(&mut self, entry: &FileEntry)
+        -> Result<Option<Vec<u8>>, FilesystemError>;
+
+    /// Read a byte range from the resource fork. Returns `Ok(None)` under
+    /// the same conditions as [`Self::read_resource_fork`].
+    fn read_resource_fork_range(
+        &mut self,
+        entry: &FileEntry,
+        offset: u64,
+        length: usize,
+    ) -> Result<Option<Vec<u8>>, FilesystemError>;
+
     /// The volume label, if the filesystem provides one.
     fn volume_name(&self) -> Option<&str>;
 }

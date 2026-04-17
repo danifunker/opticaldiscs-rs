@@ -197,6 +197,22 @@ impl Filesystem for Iso9660Filesystem {
             .map_err(sector_to_fs_err)
     }
 
+    fn read_resource_fork(
+        &mut self,
+        _entry: &FileEntry,
+    ) -> Result<Option<Vec<u8>>, FilesystemError> {
+        Ok(None)
+    }
+
+    fn read_resource_fork_range(
+        &mut self,
+        _entry: &FileEntry,
+        _offset: u64,
+        _length: usize,
+    ) -> Result<Option<Vec<u8>>, FilesystemError> {
+        Ok(None)
+    }
+
     fn volume_name(&self) -> Option<&str> {
         if self.volume_id.is_empty() {
             None
@@ -483,6 +499,24 @@ mod tests {
         let entries = fs.list_directory(&root).unwrap();
         let file = entries.iter().find(|e| e.is_file()).unwrap();
         assert!(fs.list_directory(file).is_err());
+    }
+
+    #[test]
+    fn read_resource_fork_returns_none() {
+        let content = b"data";
+        let img = build_iso_image("RSRC_TEST", &[("FILE.TXT;1", content)]);
+        let reader = Box::new(CursorReader(Cursor::new(img)));
+        let mut fs = Iso9660Filesystem::new(reader).unwrap();
+
+        let root = fs.root().unwrap();
+        let entries = fs.list_directory(&root).unwrap();
+        let file = entries.iter().find(|e| e.is_file()).unwrap();
+
+        assert!(fs.read_resource_fork(file).unwrap().is_none());
+        assert!(fs.read_resource_fork_range(file, 0, 4).unwrap().is_none());
+        assert!(file.resource_fork_size.is_none());
+        assert!(file.type_code.is_none());
+        assert!(file.creator_code.is_none());
     }
 
     #[test]

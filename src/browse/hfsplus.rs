@@ -162,8 +162,9 @@ impl HfsPlusFilesystem {
 
     // ── File reading ──────────────────────────────────────────────────────────
 
-    /// Find the catalog file record for a given CNID and return its fork data.
-    fn find_file_fork(&mut self, cnid: u32) -> Result<HfsPlusForkData, FilesystemError> {
+    /// Find the catalog file record for a given CNID and return its fork data
+    /// for both data and resource forks.
+    fn find_file_record(&mut self, cnid: u32) -> Result<HfsPlusFileRecord, FilesystemError> {
         let mut current = self.first_leaf_node;
         let mut attempts = 0u32;
         const MAX: u32 = 10_000;
@@ -181,9 +182,8 @@ impl HfsPlusFilesystem {
                 continue;
             }
 
-            if let Some(fork) = search_node_for_file(&node, self.node_size as usize, num_rec, cnid)
-            {
-                return Ok(fork);
+            if let Some(rec) = search_node_for_file(&node, self.node_size as usize, num_rec, cnid) {
+                return Ok(rec);
             }
 
             current = next;
@@ -266,11 +266,11 @@ impl Filesystem for HfsPlusFilesystem {
                 entry.path
             )));
         }
-        let fork = self.find_file_fork(entry.location as u32)?;
-        if fork.extents.is_empty() {
+        let rec = self.find_file_record(entry.location as u32)?;
+        if rec.data_fork.extents.is_empty() {
             return Ok(Vec::new());
         }
-        self.read_fork_range(&fork, 0, fork.logical_size as usize)
+        self.read_fork_range(&rec.data_fork, 0, rec.data_fork.logical_size as usize)
     }
 
     fn read_file_range(
@@ -285,15 +285,61 @@ impl Filesystem for HfsPlusFilesystem {
                 entry.path
             )));
         }
-        let fork = self.find_file_fork(entry.location as u32)?;
-        if fork.extents.is_empty() {
+        let rec = self.find_file_record(entry.location as u32)?;
+        if rec.data_fork.extents.is_empty() {
             return Ok(Vec::new());
         }
-        let actual_len = length.min(fork.logical_size.saturating_sub(offset) as usize);
+        let actual_len = length.min(rec.data_fork.logical_size.saturating_sub(offset) as usize);
         if actual_len == 0 {
             return Ok(Vec::new());
         }
-        self.read_fork_range(&fork, offset, actual_len)
+        self.read_fork_range(&rec.data_fork, offset, actual_len)
+    }
+
+    fn read_resource_fork(
+        &mut self,
+        entry: &FileEntry,
+    ) -> Result<Option<Vec<u8>>, FilesystemError> {
+        if entry.entry_type != EntryType::File {
+            return Err(FilesystemError::NotADirectory(format!(
+                "{} is not a file",
+                entry.path
+            )));
+        }
+        let rec = self.find_file_record(entry.location as u32)?;
+        if rec.resource_fork.logical_size == 0 || rec.resource_fork.extents.is_empty() {
+            return Ok(None);
+        }
+        let bytes = self.read_fork_range(
+            &rec.resource_fork,
+            0,
+            rec.resource_fork.logical_size as usize,
+        )?;
+        Ok(Some(bytes))
+    }
+
+    fn read_resource_fork_range(
+        &mut self,
+        entry: &FileEntry,
+        offset: u64,
+        length: usize,
+    ) -> Result<Option<Vec<u8>>, FilesystemError> {
+        if entry.entry_type != EntryType::File {
+            return Err(FilesystemError::NotADirectory(format!(
+                "{} is not a file",
+                entry.path
+            )));
+        }
+        let rec = self.find_file_record(entry.location as u32)?;
+        if rec.resource_fork.logical_size == 0 || rec.resource_fork.extents.is_empty() {
+            return Ok(None);
+        }
+        let actual_len = length.min(rec.resource_fork.logical_size.saturating_sub(offset) as usize);
+        if actual_len == 0 {
+            return Ok(Some(Vec::new()));
+        }
+        let bytes = self.read_fork_range(&rec.resource_fork, offset, actual_len)?;
+        Ok(Some(bytes))
     }
 
     fn volume_name(&self) -> Option<&str> {
@@ -314,11 +360,23 @@ struct HfsPlusExtent {
     block_count: u32,
 }
 
-/// Data fork information for an HFS+ file.
+/// One fork (data or resource) of an HFS+ file: its logical size and the
+/// first 8 extents from the catalog record.
+///
+/// HFS+ stores 8 extents per fork inline. Files that spill over into the
+/// extents-overflow B-tree are not handled here — typical CD/DVD content
+/// uses few contiguous extents so this is a known but rarely-hit limitation.
 #[derive(Debug, Clone)]
 struct HfsPlusForkData {
     logical_size: u64,
     extents: Vec<HfsPlusExtent>,
+}
+
+/// The parsed file record returned by [`search_node_for_file`]: both forks.
+#[derive(Debug, Clone)]
+struct HfsPlusFileRecord {
+    data_fork: HfsPlusForkData,
+    resource_fork: HfsPlusForkData,
 }
 
 /// Process all records in a leaf node, collecting entries whose key
@@ -405,8 +463,14 @@ fn process_leaf_node(
                 entries.push(FileEntry::new_directory(name, path, cnid as u64));
             }
             HFSPLUS_FILE_RECORD => {
-                // CNID at data_off + 8, data fork logical size at data_off + 88.
-                if data_off + 96 > node.len() {
+                // File record offsets (relative to data_off):
+                //   +8    : CNID                   (u32 BE)
+                //   +48   : fdType                 (4 bytes, FileInfo)
+                //   +52   : fdCreator              (4 bytes, FileInfo)
+                //   +88   : data fork logical size (u64 BE, first field of the 80-byte data fork)
+                //   +168  : resource fork logical size (u64 BE, first field of the 80-byte resource fork)
+                // The minimum bytes needed are data_off + 176.
+                if data_off + 176 > node.len() {
                     continue;
                 }
                 let cnid = u32::from_be_bytes([
@@ -415,6 +479,18 @@ fn process_leaf_node(
                     node[data_off + 10],
                     node[data_off + 11],
                 ]);
+                let type_code = [
+                    node[data_off + 48],
+                    node[data_off + 49],
+                    node[data_off + 50],
+                    node[data_off + 51],
+                ];
+                let creator_code = [
+                    node[data_off + 52],
+                    node[data_off + 53],
+                    node[data_off + 54],
+                    node[data_off + 55],
+                ];
                 let data_size = u64::from_be_bytes([
                     node[data_off + 88],
                     node[data_off + 89],
@@ -425,7 +501,25 @@ fn process_leaf_node(
                     node[data_off + 94],
                     node[data_off + 95],
                 ]);
-                entries.push(FileEntry::new_file(name, path, data_size, cnid as u64));
+                let rsrc_size = u64::from_be_bytes([
+                    node[data_off + 168],
+                    node[data_off + 169],
+                    node[data_off + 170],
+                    node[data_off + 171],
+                    node[data_off + 172],
+                    node[data_off + 173],
+                    node[data_off + 174],
+                    node[data_off + 175],
+                ]);
+                entries.push(FileEntry::new_hfs_file(
+                    name,
+                    path,
+                    data_size,
+                    cnid as u64,
+                    rsrc_size,
+                    type_code,
+                    creator_code,
+                ));
             }
             _ => {}
         }
@@ -433,13 +527,13 @@ fn process_leaf_node(
 }
 
 /// Search a leaf node for a file record with a matching CNID, returning its
-/// data fork information.
+/// data and resource fork information.
 fn search_node_for_file(
     node: &[u8],
     node_size: usize,
     num_rec: u16,
     target_cnid: u32,
-) -> Option<HfsPlusForkData> {
+) -> Option<HfsPlusFileRecord> {
     let offsets_base = node_size - 2;
 
     for i in 0..num_rec {
@@ -458,8 +552,9 @@ fn search_node_for_file(
         }
 
         let data_off = rec_off + 2 + key_len;
-        // Minimum: type(2) + flags(2) + valence(4) + cnid(4) + ... + fork(80) = ≥104 bytes
-        if data_off + 104 > node.len() {
+        // Need the full file record: data fork ends at +168 and resource fork
+        // at +248.
+        if data_off + 248 > node.len() {
             continue;
         }
 
@@ -478,57 +573,69 @@ fn search_node_for_file(
             continue;
         }
 
-        // HFSPlusForkData at data_off + 88 (data fork):
-        //   [0..8]   logical_size (u64 BE)
-        //   [8..12]  clump_size (u32 BE)
-        //   [12..16] total_blocks (u32 BE)
-        //   [16..]   8 × HFSPlusExtentDescriptor (each 8 bytes: start_block u32 + block_count u32)
-        let fork_off = data_off + 88;
-        let logical_size = u64::from_be_bytes([
-            node[fork_off],
-            node[fork_off + 1],
-            node[fork_off + 2],
-            node[fork_off + 3],
-            node[fork_off + 4],
-            node[fork_off + 5],
-            node[fork_off + 6],
-            node[fork_off + 7],
-        ]);
+        let data_fork = parse_fork(node, data_off + 88);
+        let resource_fork = parse_fork(node, data_off + 168);
 
-        let mut extents = Vec::new();
-        for j in 0..8usize {
-            let ext_off = fork_off + 16 + j * 8;
-            if ext_off + 8 > node.len() {
-                break;
-            }
-            let start_block = u32::from_be_bytes([
-                node[ext_off],
-                node[ext_off + 1],
-                node[ext_off + 2],
-                node[ext_off + 3],
-            ]);
-            let block_count = u32::from_be_bytes([
-                node[ext_off + 4],
-                node[ext_off + 5],
-                node[ext_off + 6],
-                node[ext_off + 7],
-            ]);
-            if block_count == 0 {
-                break;
-            }
-            extents.push(HfsPlusExtent {
-                start_block,
-                block_count,
-            });
-        }
-
-        return Some(HfsPlusForkData {
-            logical_size,
-            extents,
+        return Some(HfsPlusFileRecord {
+            data_fork,
+            resource_fork,
         });
     }
 
     None
+}
+
+/// Parse one 80-byte `HFSPlusForkData` structure starting at `fork_off`.
+///
+/// Layout:
+/// - `[0..8]`   `logical_size` (u64 BE)
+/// - `[8..12]`  `clump_size`   (u32 BE)
+/// - `[12..16]` `total_blocks` (u32 BE)
+/// - `[16..80]` 8 × `HFSPlusExtentDescriptor` (each `start_block` u32 BE +
+///   `block_count` u32 BE)
+fn parse_fork(node: &[u8], fork_off: usize) -> HfsPlusForkData {
+    let logical_size = u64::from_be_bytes([
+        node[fork_off],
+        node[fork_off + 1],
+        node[fork_off + 2],
+        node[fork_off + 3],
+        node[fork_off + 4],
+        node[fork_off + 5],
+        node[fork_off + 6],
+        node[fork_off + 7],
+    ]);
+
+    let mut extents = Vec::new();
+    for j in 0..8usize {
+        let ext_off = fork_off + 16 + j * 8;
+        if ext_off + 8 > node.len() {
+            break;
+        }
+        let start_block = u32::from_be_bytes([
+            node[ext_off],
+            node[ext_off + 1],
+            node[ext_off + 2],
+            node[ext_off + 3],
+        ]);
+        let block_count = u32::from_be_bytes([
+            node[ext_off + 4],
+            node[ext_off + 5],
+            node[ext_off + 6],
+            node[ext_off + 7],
+        ]);
+        if block_count == 0 {
+            break;
+        }
+        extents.push(HfsPlusExtent {
+            start_block,
+            block_count,
+        });
+    }
+
+    HfsPlusForkData {
+        logical_size,
+        extents,
+    }
 }
 
 /// Decode a UTF-16 BE byte slice into a `String`.
@@ -579,6 +686,106 @@ mod tests {
         let mut entries = Vec::new();
         process_leaf_node(&node, 512, 0, 2, "/", &mut entries);
         assert!(entries.is_empty());
+    }
+
+    struct FileRecordSpec<'a> {
+        node_size: usize,
+        parent_id: u32,
+        name: &'a str,
+        cnid: u32,
+        data_size: u64,
+        rsrc_size: u64,
+        type_code: [u8; 4],
+        creator_code: [u8; 4],
+    }
+
+    /// Helper to write an HFS+ file record into a node buffer and return the
+    /// data offset so the caller can assert on parsed fields.
+    fn build_file_record_node(spec: &FileRecordSpec) -> (Vec<u8>, usize) {
+        let mut node = vec![0u8; spec.node_size];
+        let rec_off: u16 = 14;
+        // Record offset table entry at end of node.
+        node[spec.node_size - 2] = (rec_off >> 8) as u8;
+        node[spec.node_size - 1] = (rec_off & 0xFF) as u8;
+
+        // Key: key_length + parent_id + name_length + name (UTF-16 BE).
+        let name_chars: Vec<u16> = spec.name.encode_utf16().collect();
+        let name_len = name_chars.len();
+        let key_len: u16 = 4 + 2 + (name_len as u16) * 2;
+        node[14..16].copy_from_slice(&key_len.to_be_bytes());
+        node[16..20].copy_from_slice(&spec.parent_id.to_be_bytes());
+        node[20..22].copy_from_slice(&(name_len as u16).to_be_bytes());
+        for (i, &ch) in name_chars.iter().enumerate() {
+            let off = 22 + i * 2;
+            node[off..off + 2].copy_from_slice(&ch.to_be_bytes());
+        }
+
+        let data_off = 14 + 2 + key_len as usize;
+
+        // File record.
+        node[data_off..data_off + 2].copy_from_slice(&2i16.to_be_bytes());
+        node[data_off + 8..data_off + 12].copy_from_slice(&spec.cnid.to_be_bytes());
+        node[data_off + 48..data_off + 52].copy_from_slice(&spec.type_code);
+        node[data_off + 52..data_off + 56].copy_from_slice(&spec.creator_code);
+        node[data_off + 88..data_off + 96].copy_from_slice(&spec.data_size.to_be_bytes());
+        node[data_off + 168..data_off + 176].copy_from_slice(&spec.rsrc_size.to_be_bytes());
+
+        (node, data_off)
+    }
+
+    #[test]
+    fn process_leaf_node_file_record_populates_hfs_metadata() {
+        let (node, _) = build_file_record_node(&FileRecordSpec {
+            node_size: 2048,
+            parent_id: 2,
+            name: "note",
+            cnid: 77,
+            data_size: 1024,
+            rsrc_size: 512,
+            type_code: *b"TEXT",
+            creator_code: *b"ttxt",
+        });
+        let mut entries = Vec::new();
+        process_leaf_node(&node, 2048, 1, 2, "/", &mut entries);
+        assert_eq!(entries.len(), 1);
+        let e = &entries[0];
+        assert_eq!(e.name, "note");
+        assert!(e.is_file());
+        assert_eq!(e.size, 1024);
+        assert_eq!(e.location, 77);
+        assert_eq!(e.resource_fork_size, Some(512));
+        assert_eq!(e.type_code.as_deref(), Some("TEXT"));
+        assert_eq!(e.creator_code.as_deref(), Some("ttxt"));
+    }
+
+    #[test]
+    fn search_node_for_file_returns_both_forks() {
+        let (mut node, data_off) = build_file_record_node(&FileRecordSpec {
+            node_size: 2048,
+            parent_id: 2,
+            name: "bar",
+            cnid: 42,
+            data_size: 1024,
+            rsrc_size: 256,
+            type_code: *b"TEXT",
+            creator_code: *b"ttxt",
+        });
+        // Add one data-fork extent (start=10, count=2) at data_off+88+16.
+        let dfe = data_off + 88 + 16;
+        node[dfe..dfe + 4].copy_from_slice(&10u32.to_be_bytes());
+        node[dfe + 4..dfe + 8].copy_from_slice(&2u32.to_be_bytes());
+        // Add one resource-fork extent (start=30, count=1) at data_off+168+16.
+        let rfe = data_off + 168 + 16;
+        node[rfe..rfe + 4].copy_from_slice(&30u32.to_be_bytes());
+        node[rfe + 4..rfe + 8].copy_from_slice(&1u32.to_be_bytes());
+
+        let rec = search_node_for_file(&node, 2048, 1, 42).expect("record found");
+        assert_eq!(rec.data_fork.logical_size, 1024);
+        assert_eq!(rec.data_fork.extents[0].start_block, 10);
+        assert_eq!(rec.data_fork.extents[0].block_count, 2);
+        assert_eq!(rec.resource_fork.logical_size, 256);
+        assert_eq!(rec.resource_fork.extents[0].start_block, 30);
+        assert_eq!(rec.resource_fork.extents[0].block_count, 1);
     }
 
     #[test]

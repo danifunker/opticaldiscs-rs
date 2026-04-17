@@ -167,8 +167,8 @@ impl HfsFilesystem {
 
     // ── File reading ──────────────────────────────────────────────────────────
 
-    /// Find the catalog file record for a given CNID and return its extents.
-    fn find_file_extents(&mut self, cnid: u32) -> Result<Vec<HfsExtent>, FilesystemError> {
+    /// Find the catalog file record for a given CNID and return its fork data.
+    fn find_file_record(&mut self, cnid: u32) -> Result<HfsFileRecord, FilesystemError> {
         let mut current = self.first_leaf_node;
         let mut attempts = 0u32;
         const MAX: u32 = 10_000;
@@ -186,10 +186,8 @@ impl HfsFilesystem {
                 continue;
             }
 
-            if let Some(extents) =
-                search_node_for_file(&node, self.node_size as usize, num_rec, cnid)
-            {
-                return Ok(extents);
+            if let Some(rec) = search_node_for_file(&node, self.node_size as usize, num_rec, cnid) {
+                return Ok(rec);
             }
 
             current = next;
@@ -270,8 +268,8 @@ impl Filesystem for HfsFilesystem {
                 entry.path
             )));
         }
-        let extents = self.find_file_extents(entry.location as u32)?;
-        self.read_extents_range(&extents, 0, entry.size as usize)
+        let rec = self.find_file_record(entry.location as u32)?;
+        self.read_extents_range(&rec.data_extents, 0, entry.size as usize)
     }
 
     fn read_file_range(
@@ -290,8 +288,51 @@ impl Filesystem for HfsFilesystem {
         if actual_len == 0 {
             return Ok(Vec::new());
         }
-        let extents = self.find_file_extents(entry.location as u32)?;
-        self.read_extents_range(&extents, offset, actual_len)
+        let rec = self.find_file_record(entry.location as u32)?;
+        self.read_extents_range(&rec.data_extents, offset, actual_len)
+    }
+
+    fn read_resource_fork(
+        &mut self,
+        entry: &FileEntry,
+    ) -> Result<Option<Vec<u8>>, FilesystemError> {
+        if entry.entry_type != EntryType::File {
+            return Err(FilesystemError::NotADirectory(format!(
+                "{} is not a file",
+                entry.path
+            )));
+        }
+        let rec = self.find_file_record(entry.location as u32)?;
+        if rec.resource_size == 0 {
+            return Ok(None);
+        }
+        let bytes =
+            self.read_extents_range(&rec.resource_extents, 0, rec.resource_size as usize)?;
+        Ok(Some(bytes))
+    }
+
+    fn read_resource_fork_range(
+        &mut self,
+        entry: &FileEntry,
+        offset: u64,
+        length: usize,
+    ) -> Result<Option<Vec<u8>>, FilesystemError> {
+        if entry.entry_type != EntryType::File {
+            return Err(FilesystemError::NotADirectory(format!(
+                "{} is not a file",
+                entry.path
+            )));
+        }
+        let rec = self.find_file_record(entry.location as u32)?;
+        if rec.resource_size == 0 {
+            return Ok(None);
+        }
+        let actual_len = length.min(rec.resource_size.saturating_sub(offset) as usize);
+        if actual_len == 0 {
+            return Ok(Some(Vec::new()));
+        }
+        let bytes = self.read_extents_range(&rec.resource_extents, offset, actual_len)?;
+        Ok(Some(bytes))
     }
 
     fn volume_name(&self) -> Option<&str> {
@@ -310,6 +351,20 @@ impl Filesystem for HfsFilesystem {
 struct HfsExtent {
     start_block: u16,
     block_count: u16,
+}
+
+/// The fork data for an HFS file: data fork extents and resource fork
+/// extents (plus the resource fork's logical size).
+///
+/// Note: HFS stores only the first three extents per fork in the catalog
+/// record. Files that overflow into the extents-overflow B-tree are not
+/// handled here — on CD/DVD images files are overwhelmingly contiguous, so
+/// this is a known but rarely-hit limitation.
+#[derive(Debug, Clone)]
+struct HfsFileRecord {
+    data_extents: Vec<HfsExtent>,
+    resource_extents: Vec<HfsExtent>,
+    resource_size: u64,
 }
 
 /// Process all records in a leaf node, collecting entries with matching parent.
@@ -395,29 +450,53 @@ fn process_leaf_node(
                 entries.push(FileEntry::new_directory(name, path, dir_id as u64));
             }
             HFS_FILE_RECORD => {
-                // File record:
-                //   data_off + 20: file_id (u32 BE)
-                //   data_off + 26: logical_size (u32 BE)
-                if data_off + 30 > node.len() {
+                // File record (offsets relative to data_off):
+                //   +4   : fdType    (4 bytes, FInfo)
+                //   +8   : fdCreator (4 bytes, FInfo)
+                //   +20  : file_id       (u32 BE)
+                //   +26  : data fork logical size     (u32 BE)
+                //   +38  : resource fork logical size (u32 BE)
+                if data_off + 42 > node.len() {
                     continue;
                 }
+                let type_code = [
+                    node[data_off + 4],
+                    node[data_off + 5],
+                    node[data_off + 6],
+                    node[data_off + 7],
+                ];
+                let creator_code = [
+                    node[data_off + 8],
+                    node[data_off + 9],
+                    node[data_off + 10],
+                    node[data_off + 11],
+                ];
                 let file_id = u32::from_be_bytes([
                     node[data_off + 20],
                     node[data_off + 21],
                     node[data_off + 22],
                     node[data_off + 23],
                 ]);
-                let logical_size = u32::from_be_bytes([
+                let data_logical_size = u32::from_be_bytes([
                     node[data_off + 26],
                     node[data_off + 27],
                     node[data_off + 28],
                     node[data_off + 29],
                 ]);
-                entries.push(FileEntry::new_file(
+                let rsrc_logical_size = u32::from_be_bytes([
+                    node[data_off + 38],
+                    node[data_off + 39],
+                    node[data_off + 40],
+                    node[data_off + 41],
+                ]);
+                entries.push(FileEntry::new_hfs_file(
                     name,
                     path,
-                    logical_size as u64,
+                    data_logical_size as u64,
                     file_id as u64,
+                    rsrc_logical_size as u64,
+                    type_code,
+                    creator_code,
                 ));
             }
             _ => {}
@@ -426,13 +505,14 @@ fn process_leaf_node(
 }
 
 /// Search a single B-tree leaf node for a file record whose `file_id` matches
-/// `target_cnid`.  Returns the three catalog extents on success.
+/// `target_cnid`.  Returns the file's data-fork and resource-fork extents
+/// along with the resource-fork logical size.
 fn search_node_for_file(
     node: &[u8],
     node_size: usize,
     num_rec: u16,
     target_cnid: u32,
-) -> Option<Vec<HfsExtent>> {
+) -> Option<HfsFileRecord> {
     let offsets_base = node_size - 2;
 
     for i in 0..num_rec {
@@ -460,8 +540,9 @@ fn search_node_for_file(
             continue;
         }
 
-        // file_id at data_off + 20 (u32 BE)
-        if data_off + 24 > node.len() {
+        // file_id at data_off + 20 (u32 BE); resource-fork extents end at
+        // data_off + 98 so require at least that many bytes.
+        if data_off + 98 > node.len() {
             continue;
         }
         let file_id = u32::from_be_bytes([
@@ -474,21 +555,34 @@ fn search_node_for_file(
             continue;
         }
 
-        // Extents at data_off + 74: three HfsExtent records (4 bytes each).
-        if data_off + 74 + 12 > node.len() {
-            continue;
-        }
-        let extents = (0..3)
-            .map(|j| {
-                let base = data_off + 74 + j * 4;
-                HfsExtent {
-                    start_block: u16::from_be_bytes([node[base], node[base + 1]]),
-                    block_count: u16::from_be_bytes([node[base + 2], node[base + 3]]),
-                }
-            })
-            .collect();
+        let resource_size = u32::from_be_bytes([
+            node[data_off + 38],
+            node[data_off + 39],
+            node[data_off + 40],
+            node[data_off + 41],
+        ]) as u64;
 
-        return Some(extents);
+        let read_three_extents = |base_off: usize| -> Vec<HfsExtent> {
+            (0..3)
+                .map(|j| {
+                    let base = base_off + j * 4;
+                    HfsExtent {
+                        start_block: u16::from_be_bytes([node[base], node[base + 1]]),
+                        block_count: u16::from_be_bytes([node[base + 2], node[base + 3]]),
+                    }
+                })
+                .collect()
+        };
+
+        // Data-fork extents at data_off + 74; resource-fork extents at +86.
+        let data_extents = read_three_extents(data_off + 74);
+        let resource_extents = read_three_extents(data_off + 86);
+
+        return Some(HfsFileRecord {
+            data_extents,
+            resource_extents,
+            resource_size,
+        });
     }
 
     None
@@ -595,10 +689,15 @@ mod tests {
                                               // key_len=9 → data_off = 14 + ((9 + 2) & !1) = 14 + 10 = 24
         let data_off = 24usize;
         node[data_off] = 2; // HFS_FILE_RECORD
-                            // file_id at data_off + 20
+                            // fdType at +4, fdCreator at +8
+        node[data_off + 4..data_off + 8].copy_from_slice(b"TEXT");
+        node[data_off + 8..data_off + 12].copy_from_slice(b"ttxt");
+        // file_id at data_off + 20
         node[data_off + 20..data_off + 24].copy_from_slice(&77u32.to_be_bytes());
-        // logical_size at data_off + 26
+        // data-fork logical_size at data_off + 26
         node[data_off + 26..data_off + 30].copy_from_slice(&1024u32.to_be_bytes());
+        // resource-fork logical_size at data_off + 38
+        node[data_off + 38..data_off + 42].copy_from_slice(&256u32.to_be_bytes());
 
         let mut entries = Vec::new();
         process_leaf_node(&node, 512, 1, 2, "/", &mut entries);
@@ -607,5 +706,39 @@ mod tests {
         assert!(entries[0].is_file());
         assert_eq!(entries[0].size, 1024);
         assert_eq!(entries[0].location, 77);
+        assert_eq!(entries[0].resource_fork_size, Some(256));
+        assert_eq!(entries[0].type_code.as_deref(), Some("TEXT"));
+        assert_eq!(entries[0].creator_code.as_deref(), Some("ttxt"));
+    }
+
+    #[test]
+    fn search_node_for_file_returns_both_forks() {
+        let mut node = vec![0u8; 512];
+        let rec_off: u16 = 14;
+        node[510] = (rec_off >> 8) as u8;
+        node[511] = (rec_off & 0xFF) as u8;
+
+        node[14] = 9; // key_len
+        node[15] = 0;
+        node[16..20].copy_from_slice(&2u32.to_be_bytes());
+        node[20] = 3;
+        node[21..24].copy_from_slice(b"bar");
+        let data_off = 24usize;
+        node[data_off] = 2; // HFS_FILE_RECORD
+        node[data_off + 20..data_off + 24].copy_from_slice(&42u32.to_be_bytes()); // file_id=42
+        node[data_off + 38..data_off + 42].copy_from_slice(&100u32.to_be_bytes()); // rsrc size
+                                                                                   // Data-fork extents at +74: one extent (start=10, count=2)
+        node[data_off + 74..data_off + 76].copy_from_slice(&10u16.to_be_bytes());
+        node[data_off + 76..data_off + 78].copy_from_slice(&2u16.to_be_bytes());
+        // Resource-fork extents at +86: one extent (start=30, count=1)
+        node[data_off + 86..data_off + 88].copy_from_slice(&30u16.to_be_bytes());
+        node[data_off + 88..data_off + 90].copy_from_slice(&1u16.to_be_bytes());
+
+        let rec = search_node_for_file(&node, 512, 1, 42).expect("record found");
+        assert_eq!(rec.resource_size, 100);
+        assert_eq!(rec.data_extents[0].start_block, 10);
+        assert_eq!(rec.data_extents[0].block_count, 2);
+        assert_eq!(rec.resource_extents[0].start_block, 30);
+        assert_eq!(rec.resource_extents[0].block_count, 1);
     }
 }
