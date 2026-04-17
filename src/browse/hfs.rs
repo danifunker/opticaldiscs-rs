@@ -453,10 +453,10 @@ fn process_leaf_node(
                 // File record (offsets relative to data_off):
                 //   +4   : fdType    (4 bytes, FInfo)
                 //   +8   : fdCreator (4 bytes, FInfo)
-                //   +20  : file_id       (u32 BE)
+                //   +20  : file_id                    (u32 BE)
                 //   +26  : data fork logical size     (u32 BE)
-                //   +38  : resource fork logical size (u32 BE)
-                if data_off + 42 > node.len() {
+                //   +36  : resource fork logical size (u32 BE)
+                if data_off + 40 > node.len() {
                     continue;
                 }
                 let type_code = [
@@ -484,10 +484,10 @@ fn process_leaf_node(
                     node[data_off + 29],
                 ]);
                 let rsrc_logical_size = u32::from_be_bytes([
+                    node[data_off + 36],
+                    node[data_off + 37],
                     node[data_off + 38],
                     node[data_off + 39],
-                    node[data_off + 40],
-                    node[data_off + 41],
                 ]);
                 entries.push(FileEntry::new_hfs_file(
                     name,
@@ -556,10 +556,10 @@ fn search_node_for_file(
         }
 
         let resource_size = u32::from_be_bytes([
+            node[data_off + 36],
+            node[data_off + 37],
             node[data_off + 38],
             node[data_off + 39],
-            node[data_off + 40],
-            node[data_off + 41],
         ]) as u64;
 
         let read_three_extents = |base_off: usize| -> Vec<HfsExtent> {
@@ -696,8 +696,8 @@ mod tests {
         node[data_off + 20..data_off + 24].copy_from_slice(&77u32.to_be_bytes());
         // data-fork logical_size at data_off + 26
         node[data_off + 26..data_off + 30].copy_from_slice(&1024u32.to_be_bytes());
-        // resource-fork logical_size at data_off + 38
-        node[data_off + 38..data_off + 42].copy_from_slice(&256u32.to_be_bytes());
+        // resource-fork logical_size at data_off + 36
+        node[data_off + 36..data_off + 40].copy_from_slice(&256u32.to_be_bytes());
 
         let mut entries = Vec::new();
         process_leaf_node(&node, 512, 1, 2, "/", &mut entries);
@@ -726,7 +726,7 @@ mod tests {
         let data_off = 24usize;
         node[data_off] = 2; // HFS_FILE_RECORD
         node[data_off + 20..data_off + 24].copy_from_slice(&42u32.to_be_bytes()); // file_id=42
-        node[data_off + 38..data_off + 42].copy_from_slice(&100u32.to_be_bytes()); // rsrc size
+        node[data_off + 36..data_off + 40].copy_from_slice(&100u32.to_be_bytes()); // rsrc size
                                                                                    // Data-fork extents at +74: one extent (start=10, count=2)
         node[data_off + 74..data_off + 76].copy_from_slice(&10u16.to_be_bytes());
         node[data_off + 76..data_off + 78].copy_from_slice(&2u16.to_be_bytes());
