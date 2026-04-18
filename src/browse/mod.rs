@@ -15,6 +15,7 @@ pub mod iso9660;
 // Phase 8
 pub mod hfs;
 pub mod hfsplus;
+pub mod mac_alias;
 
 pub use entry::{EntryType, FileEntry};
 pub use filesystem::{Filesystem, FilesystemError};

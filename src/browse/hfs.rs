@@ -125,7 +125,8 @@ impl HfsFilesystem {
         parent_cnid: u32,
         parent_path: &str,
     ) -> Result<Vec<FileEntry>, FilesystemError> {
-        let mut entries = Vec::new();
+        let mut entries: Vec<FileEntry> = Vec::new();
+        let mut metas: Vec<Option<HfsFileMeta>> = Vec::new();
         let mut current = self.first_leaf_node;
         let mut attempts = 0u32;
         const MAX: u32 = 10_000;
@@ -151,8 +152,25 @@ impl HfsFilesystem {
                 parent_cnid,
                 parent_path,
                 &mut entries,
+                &mut metas,
             );
             current = next;
+        }
+
+        // Resolve classic Mac aliases: files with the alias flag set have
+        // an `alis` resource in their resource fork pointing to the target.
+        for (i, meta) in metas.iter().enumerate() {
+            if let Some(meta) = meta {
+                if meta.finder_flags & super::mac_alias::IS_ALIAS_FLAG != 0 && meta.rsrc_size > 0 {
+                    if let Ok(rsrc) =
+                        self.read_extents_range(&meta.rsrc_extents, 0, meta.rsrc_size as usize)
+                    {
+                        if let Some(target) = super::mac_alias::resolve_alias_target(&rsrc) {
+                            entries[i].symlink_target = Some(target);
+                        }
+                    }
+                }
+            }
         }
 
         // Directories first, then sort by name (case-insensitive).
@@ -367,7 +385,20 @@ struct HfsFileRecord {
     resource_size: u64,
 }
 
+/// Per-file metadata gathered during leaf traversal so that `list_by_id`
+/// can resolve classic Mac aliases without re-walking the B-tree.
+#[derive(Debug, Clone)]
+struct HfsFileMeta {
+    finder_flags: u16,
+    rsrc_extents: Vec<HfsExtent>,
+    rsrc_size: u64,
+}
+
 /// Process all records in a leaf node, collecting entries with matching parent.
+///
+/// `metas` is pushed in parallel with `entries`: `None` for folders, `Some`
+/// for files, so that aliases can later be resolved without re-walking the
+/// B-tree.
 fn process_leaf_node(
     node: &[u8],
     node_size: usize,
@@ -375,6 +406,7 @@ fn process_leaf_node(
     parent_cnid: u32,
     parent_path: &str,
     entries: &mut Vec<FileEntry>,
+    metas: &mut Vec<Option<HfsFileMeta>>,
 ) {
     let offsets_base = node_size - 2;
 
@@ -448,15 +480,18 @@ fn process_leaf_node(
                     node[data_off + 9],
                 ]);
                 entries.push(FileEntry::new_directory(name, path, dir_id as u64));
+                metas.push(None);
             }
             HFS_FILE_RECORD => {
                 // File record (offsets relative to data_off):
                 //   +4   : fdType    (4 bytes, FInfo)
                 //   +8   : fdCreator (4 bytes, FInfo)
+                //   +12  : fdFlags                    (u16 BE, FInfo)
                 //   +20  : file_id                    (u32 BE)
                 //   +26  : data fork logical size     (u32 BE)
                 //   +36  : resource fork logical size (u32 BE)
-                if data_off + 40 > node.len() {
+                //   +86..+98: resource fork extents (3 × HfsExtent)
+                if data_off + 98 > node.len() {
                     continue;
                 }
                 let type_code = [
@@ -498,6 +533,20 @@ fn process_leaf_node(
                     type_code,
                     creator_code,
                 ));
+                let finder_flags = u16::from_be_bytes([node[data_off + 12], node[data_off + 13]]);
+                let mut rsrc_extents = Vec::with_capacity(3);
+                for j in 0..3 {
+                    let base = data_off + 86 + j * 4;
+                    rsrc_extents.push(HfsExtent {
+                        start_block: u16::from_be_bytes([node[base], node[base + 1]]),
+                        block_count: u16::from_be_bytes([node[base + 2], node[base + 3]]),
+                    });
+                }
+                metas.push(Some(HfsFileMeta {
+                    finder_flags,
+                    rsrc_extents,
+                    rsrc_size: rsrc_logical_size as u64,
+                }));
             }
             _ => {}
         }
@@ -617,8 +666,9 @@ mod tests {
     fn process_leaf_node_empty_returns_nothing() {
         let node = vec![0u8; 512];
         let mut entries = Vec::new();
+        let mut metas = Vec::new();
         // num_rec = 0 → no work done
-        process_leaf_node(&node, 512, 0, 2, "/", &mut entries);
+        process_leaf_node(&node, 512, 0, 2, "/", &mut entries, &mut metas);
         assert!(entries.is_empty());
     }
 
@@ -640,7 +690,8 @@ mod tests {
         node[21] = b'A'; // name = "A"
 
         let mut entries = Vec::new();
-        process_leaf_node(&node, 512, 1, 2, "/", &mut entries);
+        let mut metas = Vec::new();
+        process_leaf_node(&node, 512, 1, 2, "/", &mut entries, &mut metas);
         // parent_id mismatch → no entries
         assert!(entries.is_empty());
     }
@@ -666,7 +717,8 @@ mod tests {
         node[data_off + 6..data_off + 10].copy_from_slice(&42u32.to_be_bytes()); // dir_id = 42
 
         let mut entries = Vec::new();
-        process_leaf_node(&node, 512, 1, 2, "/", &mut entries);
+        let mut metas = Vec::new();
+        process_leaf_node(&node, 512, 1, 2, "/", &mut entries, &mut metas);
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].name, "A");
         assert_eq!(entries[0].path, "/A");
@@ -700,7 +752,8 @@ mod tests {
         node[data_off + 36..data_off + 40].copy_from_slice(&256u32.to_be_bytes());
 
         let mut entries = Vec::new();
-        process_leaf_node(&node, 512, 1, 2, "/", &mut entries);
+        let mut metas = Vec::new();
+        process_leaf_node(&node, 512, 1, 2, "/", &mut entries, &mut metas);
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].name, "foo");
         assert!(entries[0].is_file());

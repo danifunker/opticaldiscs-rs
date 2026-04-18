@@ -24,6 +24,9 @@ pub struct FileEntry {
     pub type_code: Option<String>,
     /// 4-byte Mac creator code (e.g. `"ttxt"`). `None` for non-HFS filesystems.
     pub creator_code: Option<String>,
+    /// If this entry is an alias or symlink, the resolved target string for
+    /// display. `None` for regular files.
+    pub symlink_target: Option<String>,
 }
 
 /// Whether a `FileEntry` represents a file or a directory.
@@ -62,6 +65,7 @@ impl FileEntry {
             resource_fork_size: None,
             type_code: None,
             creator_code: None,
+            symlink_target: None,
         }
     }
 
@@ -87,6 +91,7 @@ impl FileEntry {
             resource_fork_size: Some(resource_fork_size),
             type_code: Some(format_mac_code(type_code)),
             creator_code: Some(format_mac_code(creator_code)),
+            symlink_target: None,
         }
     }
 
@@ -101,6 +106,7 @@ impl FileEntry {
             resource_fork_size: None,
             type_code: None,
             creator_code: None,
+            symlink_target: None,
         }
     }
 
@@ -115,6 +121,7 @@ impl FileEntry {
             resource_fork_size: None,
             type_code: None,
             creator_code: None,
+            symlink_target: None,
         }
     }
 

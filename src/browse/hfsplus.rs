@@ -121,7 +121,8 @@ impl HfsPlusFilesystem {
         parent_cnid: u32,
         parent_path: &str,
     ) -> Result<Vec<FileEntry>, FilesystemError> {
-        let mut entries = Vec::new();
+        let mut entries: Vec<FileEntry> = Vec::new();
+        let mut metas: Vec<Option<HfsPlusFileMeta>> = Vec::new();
         let mut current = self.first_leaf_node;
         let mut attempts = 0u32;
         const MAX: u32 = 10_000;
@@ -146,8 +147,45 @@ impl HfsPlusFilesystem {
                 parent_cnid,
                 parent_path,
                 &mut entries,
+                &mut metas,
             );
             current = next;
+        }
+
+        // Resolve HFS+ UNIX symlinks (slnk/rhap target in the data fork) and
+        // classic Mac aliases (alis resource in the resource fork).
+        for (i, meta) in metas.iter().enumerate() {
+            let meta = match meta {
+                Some(m) => m,
+                None => continue,
+            };
+            let entry = &mut entries[i];
+
+            let is_slnk = entry.type_code.as_deref() == Some(super::mac_alias::SLNK_TYPE)
+                && entry.creator_code.as_deref() == Some(super::mac_alias::RHAP_CREATOR);
+            if is_slnk && meta.data_fork.logical_size > 0 && meta.data_fork.logical_size <= 4096 {
+                let len = meta.data_fork.logical_size as usize;
+                if let Ok(data) = self.read_fork_range(&meta.data_fork, 0, len) {
+                    if let Ok(s) = std::str::from_utf8(&data) {
+                        let trimmed = s.trim_end_matches('\0').trim();
+                        if !trimmed.is_empty() {
+                            entry.symlink_target = Some(trimmed.to_string());
+                        }
+                    }
+                }
+            }
+
+            if entry.symlink_target.is_none()
+                && meta.finder_flags & super::mac_alias::IS_ALIAS_FLAG != 0
+                && meta.resource_fork.logical_size > 0
+            {
+                let len = meta.resource_fork.logical_size as usize;
+                if let Ok(rsrc) = self.read_fork_range(&meta.resource_fork, 0, len) {
+                    if let Some(target) = super::mac_alias::resolve_alias_target(&rsrc) {
+                        entry.symlink_target = Some(target);
+                    }
+                }
+            }
         }
 
         // Directories first, then alphabetical (case-insensitive).
@@ -379,6 +417,16 @@ struct HfsPlusFileRecord {
     resource_fork: HfsPlusForkData,
 }
 
+/// Per-file metadata collected during leaf traversal so that `list_by_cnid`
+/// can resolve HFS+ UNIX symlinks and classic Mac aliases without re-walking
+/// the B-tree.
+#[derive(Debug, Clone)]
+struct HfsPlusFileMeta {
+    finder_flags: u16,
+    data_fork: HfsPlusForkData,
+    resource_fork: HfsPlusForkData,
+}
+
 /// Process all records in a leaf node, collecting entries whose key
 /// `parent_id` matches `parent_cnid`.
 fn process_leaf_node(
@@ -388,6 +436,7 @@ fn process_leaf_node(
     parent_cnid: u32,
     parent_path: &str,
     entries: &mut Vec<FileEntry>,
+    metas: &mut Vec<Option<HfsPlusFileMeta>>,
 ) {
     let offsets_base = node_size - 2;
 
@@ -461,16 +510,18 @@ fn process_leaf_node(
                     node[data_off + 11],
                 ]);
                 entries.push(FileEntry::new_directory(name, path, cnid as u64));
+                metas.push(None);
             }
             HFSPLUS_FILE_RECORD => {
                 // File record offsets (relative to data_off):
                 //   +8    : CNID                   (u32 BE)
                 //   +48   : fdType                 (4 bytes, FileInfo)
                 //   +52   : fdCreator              (4 bytes, FileInfo)
+                //   +56   : fdFlags                (u16 BE,  FileInfo)
                 //   +88   : data fork logical size (u64 BE, first field of the 80-byte data fork)
                 //   +168  : resource fork logical size (u64 BE, first field of the 80-byte resource fork)
-                // The minimum bytes needed are data_off + 176.
-                if data_off + 176 > node.len() {
+                // Need the full 80-byte resource fork to capture its extents.
+                if data_off + 248 > node.len() {
                     continue;
                 }
                 let cnid = u32::from_be_bytes([
@@ -520,6 +571,14 @@ fn process_leaf_node(
                     type_code,
                     creator_code,
                 ));
+                let finder_flags = u16::from_be_bytes([node[data_off + 56], node[data_off + 57]]);
+                let data_fork = parse_fork(node, data_off + 88);
+                let resource_fork = parse_fork(node, data_off + 168);
+                metas.push(Some(HfsPlusFileMeta {
+                    finder_flags,
+                    data_fork,
+                    resource_fork,
+                }));
             }
             _ => {}
         }
@@ -684,7 +743,8 @@ mod tests {
     fn process_leaf_node_empty() {
         let node = vec![0u8; 512];
         let mut entries = Vec::new();
-        process_leaf_node(&node, 512, 0, 2, "/", &mut entries);
+        let mut metas = Vec::new();
+        process_leaf_node(&node, 512, 0, 2, "/", &mut entries, &mut metas);
         assert!(entries.is_empty());
     }
 
@@ -746,7 +806,8 @@ mod tests {
             creator_code: *b"ttxt",
         });
         let mut entries = Vec::new();
-        process_leaf_node(&node, 2048, 1, 2, "/", &mut entries);
+        let mut metas = Vec::new();
+        process_leaf_node(&node, 2048, 1, 2, "/", &mut entries, &mut metas);
         assert_eq!(entries.len(), 1);
         let e = &entries[0];
         assert_eq!(e.name, "note");
@@ -812,7 +873,8 @@ mod tests {
         node[data_off + 8..data_off + 12].copy_from_slice(&55u32.to_be_bytes());
 
         let mut entries = Vec::new();
-        process_leaf_node(&node, 512, 1, 2, "/", &mut entries);
+        let mut metas = Vec::new();
+        process_leaf_node(&node, 512, 1, 2, "/", &mut entries, &mut metas);
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].name, "A");
         assert!(entries[0].is_directory());
