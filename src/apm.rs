@@ -12,9 +12,6 @@ use crate::sector_reader::SectorReader;
 /// Size of an APM block (always 512 bytes, independent of disc sector size).
 const APM_BLOCK_SIZE: u64 = 512;
 
-/// DDM (Driver Descriptor Map) block signature at byte 0: "ER".
-const DDM_SIGNATURE: u16 = 0x4552;
-
 /// Partition Map entry signature: "PM".
 const PM_SIGNATURE: u16 = 0x504D;
 
@@ -84,23 +81,22 @@ impl PartitionEntry {
 
 /// Parse the full Apple Partition Map from `reader`.
 ///
-/// Reads the Driver Descriptor Map at block 0, then reads all PM entries
-/// starting at block 1.  The total number of entries is taken from the
-/// first PM block's `map_entries` field.
+/// Reads the optional Driver Descriptor Map at block 0, then reads all PM
+/// entries starting at block 1.  The total number of entries is taken from
+/// the first PM block's `map_entries` field.
+///
+/// HFS-on-CD masters commonly omit the DDM (it's only meaningful for
+/// bootable Apple HDDs), leaving block 0 zero-filled.  The DDM is therefore
+/// treated as advisory: we accept either a valid `"ER"` signature or any
+/// non-`"PM"` block 0, and rely on the block-1 `"PM"` magic to gate parsing.
 ///
 /// # Errors
 ///
-/// Returns [`OpticaldiscsError::Parse`] if the DDM signature (`0x4552`) is
-/// absent, or [`OpticaldiscsError::Io`] on read failures.
+/// Returns [`OpticaldiscsError::Parse`] if block 1 does not contain a valid
+/// PM entry, or [`OpticaldiscsError::Io`] on read failures.
 pub fn parse_partition_map(reader: &mut dyn SectorReader) -> Result<Vec<PartitionEntry>> {
-    // Block 0: Driver Descriptor Map — validate the "ER" signature.
-    let ddm = reader.read_bytes(0, APM_BLOCK_SIZE as usize)?;
-    let sig = u16::from_be_bytes([ddm[0], ddm[1]]);
-    if sig != DDM_SIGNATURE {
-        return Err(OpticaldiscsError::Parse(format!(
-            "No APM DDM signature (expected 0x{DDM_SIGNATURE:04X}, got 0x{sig:04X})"
-        )));
-    }
+    // Block 0: Driver Descriptor Map — advisory only, see fn doc.
+    let _ = reader.read_bytes(0, APM_BLOCK_SIZE as usize)?;
 
     // Block 1: first PM entry — tells us the total entry count.
     let first_pm = reader.read_bytes(APM_BLOCK_SIZE, APM_BLOCK_SIZE as usize)?;
@@ -279,13 +275,35 @@ mod tests {
     }
 
     #[test]
-    fn parse_partition_map_no_ddm_fails() {
+    fn parse_partition_map_empty_fails() {
+        // No DDM and no PM at block 1 — block 1 PM check must reject.
         let img = vec![0u8; 4 * SECTOR_SIZE as usize];
         let mut reader = CursorReader(Cursor::new(img));
         assert!(matches!(
             parse_partition_map(&mut reader),
             Err(OpticaldiscsError::Parse(_))
         ));
+    }
+
+    #[test]
+    fn parse_partition_map_zero_ddm_with_valid_pm() {
+        // HFS-on-CD masters often leave block 0 zero-filled (no DDM).
+        // Parsing must still succeed when block 1 has a valid PM entry.
+        let mut img = vec![0u8; 4 * SECTOR_SIZE as usize];
+        // Block 0 stays zero.
+        img[512..1024].copy_from_slice(&make_pm_block(
+            2,
+            1,
+            2,
+            "Partition_Map",
+            "Apple_partition_map",
+        ));
+        img[1024..1536].copy_from_slice(&make_pm_block(2, 8, 200, "MacOS", "Apple_HFS"));
+        let mut reader = CursorReader(Cursor::new(img));
+        let entries = parse_partition_map(&mut reader).unwrap();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[1].partition_type, "Apple_HFS");
+        assert_eq!(entries[1].start_block, 8);
     }
 
     #[test]
