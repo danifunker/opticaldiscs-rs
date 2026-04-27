@@ -37,8 +37,8 @@ pub struct HfsFilesystem {
     alloc_block_size: u32,
     /// First allocation block sector number (in 512-byte sectors from partition start).
     alloc_block_start: u32,
-    /// Start block of the catalog file's first extent (in allocation blocks).
-    catalog_first_block: u16,
+    /// Full catalog file contents, loaded at open time across all 3 extents.
+    catalog_data: Vec<u8>,
     /// B-tree node size in bytes.
     node_size: u16,
     /// Node number of the first leaf node in the catalog B-tree.
@@ -64,17 +64,27 @@ impl HfsFilesystem {
         let mdb = MasterDirectoryBlock::read_from(reader.as_mut(), partition_offset)
             .map_err(hfs_disc_err)?;
 
-        // Byte offset of the first allocation block from the disc start.
-        let first_alloc_byte = partition_offset + mdb.alloc_block_start as u64 * 512;
+        // Load the entire catalog file across all 3 extents into memory.
+        // CD/DVD HFS catalogs are typically a few MB; keeping it cached
+        // simplifies B-tree traversal and handles fragmented catalogs.
+        let catalog_extents: Vec<HfsExtent> = mdb
+            .catalog_extents
+            .iter()
+            .filter(|(_, count)| *count != 0)
+            .map(|&(start, count)| HfsExtent {
+                start_block: start,
+                block_count: count,
+            })
+            .collect();
 
-        // Byte offset of the catalog file.
-        let catalog_offset =
-            first_alloc_byte + mdb.catalog_start_block as u64 * mdb.alloc_block_size as u64;
-
-        // Read the B-tree header node (node 0) — 256 bytes suffices.
-        let btree_hdr = reader
-            .read_bytes(catalog_offset, 256)
-            .map_err(hfs_disc_err)?;
+        let catalog_data = read_extents_into_vec(
+            reader.as_mut(),
+            partition_offset,
+            mdb.alloc_block_start as u32,
+            mdb.alloc_block_size,
+            &catalog_extents,
+            mdb.catalog_file_size as usize,
+        )?;
 
         // B-tree header node layout:
         //   [0..14]  node descriptor (14 bytes)
@@ -83,16 +93,25 @@ impl HfsFilesystem {
         // Relevant fields (offsets from node start, matching ODE hfs_fs.rs):
         //   [24..28] first_leaf_node (u32 BE)
         //   [32..34] node_size (u16 BE)
-        let first_leaf_node =
-            u32::from_be_bytes([btree_hdr[24], btree_hdr[25], btree_hdr[26], btree_hdr[27]]);
-        let node_size = u16::from_be_bytes([btree_hdr[32], btree_hdr[33]]);
+        if catalog_data.len() < 34 {
+            return Err(FilesystemError::Parse(
+                "HFS catalog too small to contain B-tree header".into(),
+            ));
+        }
+        let first_leaf_node = u32::from_be_bytes([
+            catalog_data[24],
+            catalog_data[25],
+            catalog_data[26],
+            catalog_data[27],
+        ]);
+        let node_size = u16::from_be_bytes([catalog_data[32], catalog_data[33]]);
 
         Ok(Self {
             reader,
             partition_offset,
             alloc_block_size: mdb.alloc_block_size,
             alloc_block_start: mdb.alloc_block_start as u32,
-            catalog_first_block: mdb.catalog_start_block,
+            catalog_data,
             node_size,
             first_leaf_node,
             volume_name: mdb.volume_name,
@@ -101,19 +120,17 @@ impl HfsFilesystem {
 
     // ── B-tree helpers ────────────────────────────────────────────────────────
 
-    /// Byte offset of the start of the catalog file.
-    fn catalog_offset(&self) -> u64 {
-        self.partition_offset
-            + self.alloc_block_start as u64 * 512
-            + self.catalog_first_block as u64 * self.alloc_block_size as u64
-    }
-
-    /// Read a single B-tree node by node number.
-    fn read_node(&mut self, node_num: u32) -> Result<Vec<u8>, FilesystemError> {
-        let offset = self.catalog_offset() + node_num as u64 * self.node_size as u64;
-        self.reader
-            .read_bytes(offset, self.node_size as usize)
-            .map_err(hfs_disc_err)
+    /// Borrow a single B-tree node by node number from the cached catalog.
+    fn read_node(&self, node_num: u32) -> Result<&[u8], FilesystemError> {
+        let node_size = self.node_size as usize;
+        let start = node_num as usize * node_size;
+        let end = start + node_size;
+        self.catalog_data.get(start..end).ok_or_else(|| {
+            FilesystemError::Parse(format!(
+                "HFS B-tree node {node_num} out of bounds (catalog has {} bytes)",
+                self.catalog_data.len()
+            ))
+        })
     }
 
     // ── Directory listing ─────────────────────────────────────────────────────
@@ -146,7 +163,7 @@ impl HfsFilesystem {
             }
 
             process_leaf_node(
-                &node,
+                node,
                 self.node_size as usize,
                 num_rec,
                 parent_cnid,
@@ -204,7 +221,7 @@ impl HfsFilesystem {
                 continue;
             }
 
-            if let Some(rec) = search_node_for_file(&node, self.node_size as usize, num_rec, cnid) {
+            if let Some(rec) = search_node_for_file(node, self.node_size as usize, num_rec, cnid) {
                 return Ok(rec);
             }
 
@@ -369,6 +386,37 @@ impl Filesystem for HfsFilesystem {
 struct HfsExtent {
     start_block: u16,
     block_count: u16,
+}
+
+/// Read a fork (catalog or other file) across its extent list into a `Vec`.
+///
+/// Walks `extents` in order, reading the corresponding physical bytes from
+/// `reader` until `total_size` bytes have been collected.  Stops early when
+/// it hits an empty extent (`block_count == 0`).
+fn read_extents_into_vec(
+    reader: &mut dyn SectorReader,
+    partition_offset: u64,
+    alloc_block_start: u32,
+    alloc_block_size: u32,
+    extents: &[HfsExtent],
+    total_size: usize,
+) -> Result<Vec<u8>, FilesystemError> {
+    let first_alloc_offset = partition_offset + alloc_block_start as u64 * 512;
+    let mut data = Vec::with_capacity(total_size);
+
+    for ext in extents {
+        if ext.block_count == 0 || data.len() >= total_size {
+            break;
+        }
+        let phys_off = first_alloc_offset + ext.start_block as u64 * alloc_block_size as u64;
+        let ext_len = ext.block_count as usize * alloc_block_size as usize;
+        let want = ext_len.min(total_size - data.len());
+        let chunk = reader.read_bytes(phys_off, want).map_err(hfs_disc_err)?;
+        data.extend_from_slice(&chunk);
+    }
+
+    data.truncate(total_size);
+    Ok(data)
 }
 
 /// The fork data for an HFS file: data fork extents and resource fork

@@ -38,6 +38,13 @@ pub struct MasterDirectoryBlock {
     pub catalog_start_block: u16,
     /// Number of allocation blocks in the catalog file's first extent.
     pub catalog_block_count: u16,
+    /// Catalog file logical size in bytes (`drCTFlSize`).
+    pub catalog_file_size: u32,
+    /// All three catalog file extents (`drCTExtRec`).
+    ///
+    /// Each tuple is `(start_block, block_count)` in allocation blocks.
+    /// Unused extents are `(0, 0)`.
+    pub catalog_extents: [(u16, u16); 3],
 }
 
 impl MasterDirectoryBlock {
@@ -79,10 +86,17 @@ impl MasterDirectoryBlock {
         let name_end = (37 + name_len).min(64);
         let volume_name = mac_roman_to_string(&data[37..name_end]);
 
-        // Bytes 150–151: first catalog extent start block (u16 BE).
-        // Bytes 152–153: first catalog extent block count (u16 BE).
-        let catalog_start_block = u16::from_be_bytes([data[150], data[151]]);
-        let catalog_block_count = u16::from_be_bytes([data[152], data[153]]);
+        // Bytes 146–149: drCTFlSize — catalog file logical size (u32 BE).
+        let catalog_file_size = u32::from_be_bytes([data[146], data[147], data[148], data[149]]);
+
+        // Bytes 150–161: drCTExtRec — three catalog extents (start, count) × 3.
+        let mut catalog_extents = [(0u16, 0u16); 3];
+        for (i, ext) in catalog_extents.iter_mut().enumerate() {
+            let base = 150 + i * 4;
+            ext.0 = u16::from_be_bytes([data[base], data[base + 1]]);
+            ext.1 = u16::from_be_bytes([data[base + 2], data[base + 3]]);
+        }
+        let (catalog_start_block, catalog_block_count) = catalog_extents[0];
 
         Ok(Self {
             creation_date,
@@ -92,6 +106,8 @@ impl MasterDirectoryBlock {
             volume_name,
             catalog_start_block,
             catalog_block_count,
+            catalog_file_size,
+            catalog_extents,
         })
     }
 }
@@ -198,6 +214,9 @@ mod tests {
         let nb = name.as_bytes();
         img[off + 36] = nb.len() as u8;
         img[off + 37..off + 37 + nb.len()].copy_from_slice(nb);
+        // Catalog file size (bytes 146–149) — caller supplies via `catalog_count` × block_size
+        let cat_size = catalog_count as u32 * alloc_block_size;
+        img[off + 146..off + 150].copy_from_slice(&cat_size.to_be_bytes());
         // Catalog extent (bytes 150–153)
         img[off + 150..off + 152].copy_from_slice(&catalog_start.to_be_bytes());
         img[off + 152..off + 154].copy_from_slice(&catalog_count.to_be_bytes());
@@ -214,6 +233,9 @@ mod tests {
         assert_eq!(mdb.alloc_block_start, 3);
         assert_eq!(mdb.catalog_start_block, 5);
         assert_eq!(mdb.catalog_block_count, 10);
+        assert_eq!(mdb.catalog_extents[0], (5, 10));
+        assert_eq!(mdb.catalog_extents[1], (0, 0));
+        assert_eq!(mdb.catalog_file_size, 10 * 4096);
         assert_eq!(mdb.file_count, 5);
         assert_eq!(mdb.creation_date, 0x8000_0000);
     }
