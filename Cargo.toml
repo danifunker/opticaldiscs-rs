@@ -16,8 +16,8 @@ drives = []                            # physical optical drive enumeration
 [dependencies]
 thiserror = "2"
 log       = "0.4"
-cue_sheet = "0.1"
-chd       = "0.2"
+cue_sheet = "0.3"
+chd       = "0.3"
 
 # optional: only needed with feature "toc"
 sha1   = { version = "0.10", optional = true }

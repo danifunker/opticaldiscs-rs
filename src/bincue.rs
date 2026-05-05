@@ -162,8 +162,11 @@ pub fn parse_cue_tracks(cue_path: &Path) -> Result<Vec<BinTrack>> {
             }
             Command::Index(idx_no, msf) if *idx_no == 1 => {
                 if let Some(t) = raw.last_mut() {
-                    t.index_01_frames =
-                        msf_to_frames(msf.mins as u8, msf.secs as u8, msf.frames as u8);
+                    t.index_01_frames = msf_to_frames(
+                        msf.minutes() as u8,
+                        msf.seconds() as u8,
+                        msf.frames() as u8,
+                    );
                 }
             }
             _ => {}
