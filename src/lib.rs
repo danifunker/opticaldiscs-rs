@@ -62,6 +62,9 @@ pub mod apm;
 pub mod hfs;
 pub mod hfsplus;
 
+// SGI Volume Header (IRIX install/distribution CDs — see docs/EFS_Implementation.md)
+pub mod sgi;
+
 // Phase 9
 #[cfg(feature = "drives")]
 pub mod drives;
@@ -86,3 +89,6 @@ pub use sector_reader::ChdSectorReader;
 // Phase 8
 pub use hfs::MasterDirectoryBlock;
 pub use hfsplus::HfsPlusVolumeHeader;
+
+// SGI
+pub use sgi::{SgiPartitionEntry, SgiPartitionType, SgiVolumeHeader};
