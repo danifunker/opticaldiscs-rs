@@ -128,19 +128,21 @@ the existing sector readers already enforce 2048-byte alignment.
 
 ## Phase D — `Filesystem` trait impl (`src/browse/efs.rs`)
 
-- [ ] `EfsFilesystem`-backed browser implementing `Filesystem`:
-  - [ ] `root()` — inode 2 as a `FileEntry`.
-  - [ ] `list_directory(entry)` — walk inode extents, parse dir blocks.
-  - [ ] `read_file(entry)` — read all extents into a `Vec<u8>`.
-  - [ ] `read_file_range(entry, offset, length)` — read a window.
-  - [ ] `read_resource_fork{,_range}` → `Ok(None)`.
-  - [ ] `volume_name()` from `fs_fname` + `fs_fpack` (Latin-1, trimmed).
-- [ ] Symlinks: mode bit `0o120000`; surface as `EntryType::Symlink`
-      with `target = read_file(entry).to_string_lossy()`.
-- [ ] `FileEntry.location` carries the EFS inode number (parallel to LBA
+- [x] `EfsFilesystem`-backed browser implementing `Filesystem`:
+  - [x] `root()` — inode 2 as a `FileEntry`.
+  - [x] `list_directory(entry)` — walk inode extents, parse dir blocks
+        (slot table at byte 4 with `slot*2` offset; skip `.` / `..`).
+  - [x] `read_file(entry)` — read entire file via inline extents.
+  - [x] `read_file_range(entry, offset, length)` — byte-window read.
+  - [x] `read_resource_fork{,_range}` → `Ok(None)`.
+  - [x] `volume_name()` from `fname` + `fpack` (Latin-1, trimmed).
+- [x] Symlinks: mode bit `0o120000`; opticaldiscs' `EntryType` has no
+      `Symlink` variant, so symlinks surface as `EntryType::File` with
+      `symlink_target` populated. Matches HFS alias handling.
+- [x] `FileEntry.location` carries the EFS inode number (parallel to LBA
       for ISO 9660 and CNID for HFS/HFS+).
-- [ ] Register in `browse/mod.rs::open_filesystem` so the existing entry
-      point dispatches on `FilesystemType::Efs`.
+- [x] Register in `browse/mod.rs::open_disc_filesystem` so the existing
+      entry point dispatches on `FilesystemType::Efs`.
 
 ## Phase E — Public surface
 
