@@ -114,21 +114,17 @@ Port from `rusty-backup/src/fs/efs.rs`. Adapt every `Read+Seek` call to
 `SectorReader::read_bytes`. Drop the bounce-buffer alignment helper —
 the existing sector readers already enforce 2048-byte alignment.
 
-- [ ] `EfsSuperblock` with explicit byte-offset reads (magic at sb+28).
-- [ ] `EfsExtent` (16-byte packed record: `magic:8, bn:24, off:8, len:8`).
-- [ ] `EfsInode` (128 bytes, 12 inline extents, mode + size + nlinks).
-- [ ] `EfsFilesystem::open(reader, partition_offset)` → parses superblock.
-- [ ] `inode_byte_offset(inum)` using `fs_firstcg` / `fs_cgisize` /
-      `fs_cgfsize` (port the cylinder-group math verbatim).
-- [ ] `read_inode(inum) -> EfsInode`.
-- [ ] `read_dir_block(buf, parent)` parsing the 512-byte slotted block
-      format (`firstused:16, slots:8, magic:16`, slot offsets, then
-      variable-length `(inumber:32, namelen:8, name[])` entries).
-- [ ] `read_inode_data` / `stream_inode_data` walking the 12 inline
-      extents (no indirect blocks in EFS — max ~192 MiB per file).
-- [ ] Unit tests: parse superblock from the synthetic fixture; reject
-      bad magic; inode-number → byte-offset translation matches a hand
-      computation; directory block parse round-trip.
+- [x] `EfsSuperblock` with explicit byte-offset reads (magic at sb+28).
+- [x] `EfsExtent` (8-byte packed record: `magic:8, bn:24, length:8, offset:24`).
+- [x] `EfsInode` (128 bytes, 12 inline extents, mode + size + nlinks).
+- [x] `inode_byte_offset(sb, inum)` using `firstcg` / `cgisize` /
+      `cgfsize` (cylinder-group math, ported from Linux v5.15 `efs_iget`).
+- [x] Type-predicate helpers (`is_dir`, `is_regular`, `is_symlink`).
+- [x] Unit tests: parse / reject bad magic / reject short buffer / label
+      formatting / inode-byte-offset hand computation / extent decode /
+      inode type predicates.
+- [ ] Directory-block walking and inode/extent I/O happen in Phase D
+      (they need a `SectorReader`).
 
 ## Phase D — `Filesystem` trait impl (`src/browse/efs.rs`)
 

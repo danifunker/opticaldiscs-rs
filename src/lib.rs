@@ -65,6 +65,9 @@ pub mod hfsplus;
 // SGI Volume Header (IRIX install/distribution CDs — see docs/EFS_Implementation.md)
 pub mod sgi;
 
+// EFS filesystem on-disk structures.
+pub mod efs;
+
 // Phase 9
 #[cfg(feature = "drives")]
 pub mod drives;
@@ -92,3 +95,6 @@ pub use hfsplus::HfsPlusVolumeHeader;
 
 // SGI
 pub use sgi::{SgiPartitionEntry, SgiPartitionType, SgiVolumeHeader};
+
+// EFS
+pub use efs::{EfsExtent, EfsInode, EfsSuperblock};
