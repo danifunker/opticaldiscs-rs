@@ -73,7 +73,10 @@ impl EfsFilesystem {
     ///
     /// Returns `Ok(Some(buf))` on a valid block, `Ok(None)` when the block is
     /// truncated or carries no `EFS_DIRBLK_MAGIC` (damaged / past EOF).
-    fn read_dir_block(&mut self, bn: u32) -> Result<Option<[u8; EFS_BLOCKSIZE as usize]>, FilesystemError> {
+    fn read_dir_block(
+        &mut self,
+        bn: u32,
+    ) -> Result<Option<[u8; EFS_BLOCKSIZE as usize]>, FilesystemError> {
         let byte = bn as u64 * EFS_BLOCKSIZE;
         let res = self
             .reader
@@ -149,9 +152,7 @@ impl EfsFilesystem {
     }
 
     fn read_symlink_target(&mut self, inode: &EfsInode) -> Option<String> {
-        let bytes = self
-            .read_extent_range(inode, 0, inode.size as usize)
-            .ok()?;
+        let bytes = self.read_extent_range(inode, 0, inode.size as usize).ok()?;
         Some(
             String::from_utf8_lossy(&bytes)
                 .trim_end_matches('\0')

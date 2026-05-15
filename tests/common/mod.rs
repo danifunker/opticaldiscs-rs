@@ -42,11 +42,7 @@ pub fn build_synth_irix_disc() -> Vec<u8> {
         SgiPartitionType::SysV.as_u32(),
     );
     parts[8] = (EFS_PART_FIRST_512, 0, SgiPartitionType::VolHdr.as_u32());
-    parts[10] = (
-        N_BLOCKS_512 as u32,
-        0,
-        SgiPartitionType::Volume.as_u32(),
-    );
+    parts[10] = (N_BLOCKS_512 as u32, 0, SgiPartitionType::Volume.as_u32());
     for (i, (blocks, first, ptype)) in parts.iter().enumerate() {
         let off = 0x138 + i * 12;
         img[off..off + 4].copy_from_slice(&blocks.to_be_bytes());

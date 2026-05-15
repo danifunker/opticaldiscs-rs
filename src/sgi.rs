@@ -301,7 +301,7 @@ pub(crate) mod tests {
         buf[0..4].copy_from_slice(&SGI_VOLHDR_MAGIC.to_be_bytes());
         buf[4..6].copy_from_slice(&0u16.to_be_bytes()); // root_part_num
         buf[6..8].copy_from_slice(&1u16.to_be_bytes()); // swap_part_num
-        // bootfile "/unix"
+                                                        // bootfile "/unix"
         let boot = b"/unix";
         buf[8..8 + boot.len()].copy_from_slice(boot);
 

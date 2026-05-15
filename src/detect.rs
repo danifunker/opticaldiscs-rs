@@ -26,13 +26,13 @@ use std::path::{Path, PathBuf};
 use crate::apm::find_hfs_partition_offset;
 use crate::bincue::parse_cue_tracks;
 use crate::chd::open_chd;
+use crate::efs::{EfsSuperblock, EFS_BLOCKSIZE, EFS_MAGIC_NEW, EFS_MAGIC_OLD};
 use crate::error::{OpticaldiscsError, Result};
 use crate::formats::{DiscFormat, FilesystemType};
 use crate::hfs::MasterDirectoryBlock;
 use crate::hfsplus::{extract_volume_name_from_catalog, HfsPlusVolumeHeader};
 use crate::iso9660::PrimaryVolumeDescriptor;
 use crate::sector_reader::{BinCueSectorReader, ChdSectorReader, IsoSectorReader, SectorReader};
-use crate::efs::{EfsSuperblock, EFS_BLOCKSIZE, EFS_MAGIC_NEW, EFS_MAGIC_OLD};
 use crate::sgi::{SgiVolumeHeader, SGI_VOLHDR_MAGIC};
 
 /// CHD magic bytes at offset 0.
