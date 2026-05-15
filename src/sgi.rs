@@ -289,7 +289,7 @@ fn parse_fixed_ascii(buf: &[u8]) -> String {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::sector_reader::SECTOR_SIZE;
     use std::io::{Cursor, Read, Seek, SeekFrom};

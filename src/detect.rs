@@ -32,6 +32,12 @@ use crate::hfs::MasterDirectoryBlock;
 use crate::hfsplus::{extract_volume_name_from_catalog, HfsPlusVolumeHeader};
 use crate::iso9660::PrimaryVolumeDescriptor;
 use crate::sector_reader::{BinCueSectorReader, ChdSectorReader, IsoSectorReader, SectorReader};
+use crate::sgi::{SgiVolumeHeader, SGI_VOLHDR_MAGIC};
+
+/// EFS superblock magic values (old / new). Located at sb+28 due to natural-
+/// alignment padding in the C `struct efs_super` (see docs/EFS_Implementation.md).
+const EFS_MAGIC_OLD: u32 = 0x0007_2959;
+const EFS_MAGIC_NEW: u32 = 0x0007_295A;
 
 /// CHD magic bytes at offset 0.
 const CHD_MAGIC: &[u8; 8] = b"MComprHD";
@@ -121,6 +127,11 @@ pub struct DiscImageInfo {
     pub hfs_mdb: Option<MasterDirectoryBlock>,
     /// HFS+ Volume Header, if the disc is an HFS+ volume.
     pub hfsplus_header: Option<HfsPlusVolumeHeader>,
+    /// SGI Volume Header, if present (IRIX install/distribution CDs).
+    pub sgi_header: Option<SgiVolumeHeader>,
+    /// Byte offset of the EFS partition within the disc, if the filesystem
+    /// is EFS. Used by browsers to locate the superblock and inodes.
+    pub efs_partition_offset: Option<u64>,
     /// Disc Table of Contents, if the format provides track metadata.
     ///
     /// Present for BIN/CUE and CHD images; `None` for plain ISO files.
@@ -159,6 +170,40 @@ impl DiscImageInfo {
     /// When `path` points to a `.bin`, looks for a matching `.cue` in the same
     /// directory.  The CUE is parsed, the first data track is located, and the
     /// filesystem is probed through `BinCueSectorReader`.
+    fn build(
+        path: &Path,
+        format: DiscFormat,
+        reader: &mut dyn SectorReader,
+        #[cfg(feature = "toc")] toc: Option<crate::toc::DiscTOC>,
+    ) -> Result<Self> {
+        let (mut filesystem, pvd) = probe_filesystem(reader)?;
+        let (hfs_mdb, hfsplus_header, hfs_volume_label) = probe_hfs_detail(reader, filesystem);
+        let (sgi_header, efs_partition_offset, sgi_fs) = probe_sgi_detail(reader);
+        if filesystem == FilesystemType::Unknown {
+            if let Some(fs) = sgi_fs {
+                filesystem = fs;
+            }
+        }
+        let volume_label = pvd
+            .as_ref()
+            .map(|p| p.volume_id.clone())
+            .or(hfs_volume_label);
+
+        Ok(Self {
+            path: path.to_path_buf(),
+            format,
+            filesystem,
+            volume_label,
+            pvd,
+            hfs_mdb,
+            hfsplus_header,
+            sgi_header,
+            efs_partition_offset,
+            #[cfg(feature = "toc")]
+            toc,
+        })
+    }
+
     fn probe_bincue(path: &Path) -> Result<Self> {
         // Resolve the CUE path: accept either .cue or .bin as the entry point.
         let cue_path = if path
@@ -192,51 +237,29 @@ impl DiscImageInfo {
             .clone();
 
         let mut reader = BinCueSectorReader::open(&data_track)?;
-        let (filesystem, pvd) = probe_filesystem(&mut reader)?;
-        let (hfs_mdb, hfsplus_header, hfs_volume_label) = probe_hfs_detail(&mut reader, filesystem);
-        let volume_label = pvd
-            .as_ref()
-            .map(|p| p.volume_id.clone())
-            .or(hfs_volume_label);
 
         #[cfg(feature = "toc")]
         let toc = build_bincue_toc(&tracks);
 
-        Ok(Self {
-            path: path.to_path_buf(),
-            format: DiscFormat::BinCue,
-            filesystem,
-            volume_label,
-            pvd,
-            hfs_mdb,
-            hfsplus_header,
+        Self::build(
+            path,
+            DiscFormat::BinCue,
+            &mut reader,
             #[cfg(feature = "toc")]
             toc,
-        })
+        )
     }
 
     /// Probe a plain `.iso` file.
     fn probe_iso(path: &Path) -> Result<Self> {
         let mut reader = IsoSectorReader::new(path)?;
-        let (filesystem, pvd) = probe_filesystem(&mut reader)?;
-        let (hfs_mdb, hfsplus_header, hfs_volume_label) = probe_hfs_detail(&mut reader, filesystem);
-        let volume_label = pvd
-            .as_ref()
-            .map(|p| p.volume_id.clone())
-            .or(hfs_volume_label);
-
-        Ok(Self {
-            path: path.to_path_buf(),
-            format: DiscFormat::Iso,
-            filesystem,
-            volume_label,
-            pvd,
-            hfs_mdb,
-            hfsplus_header,
-            // Plain ISO files carry no track metadata.
+        Self::build(
+            path,
+            DiscFormat::Iso,
+            &mut reader,
             #[cfg(feature = "toc")]
-            toc: None,
-        })
+            None,
+        )
     }
 
     /// Probe a `.chd` file.
@@ -262,6 +285,8 @@ impl DiscImageInfo {
                     pvd: None,
                     hfs_mdb: None,
                     hfsplus_header: None,
+                    sgi_header: None,
+                    efs_partition_offset: None,
                     #[cfg(feature = "toc")]
                     toc,
                 });
@@ -269,24 +294,13 @@ impl DiscImageInfo {
         };
 
         let mut reader = ChdSectorReader::open(path, &data_track)?;
-        let (filesystem, pvd) = probe_filesystem(&mut reader)?;
-        let (hfs_mdb, hfsplus_header, hfs_volume_label) = probe_hfs_detail(&mut reader, filesystem);
-        let volume_label = pvd
-            .as_ref()
-            .map(|p| p.volume_id.clone())
-            .or(hfs_volume_label);
-
-        Ok(Self {
-            path: path.to_path_buf(),
-            format: DiscFormat::Chd,
-            filesystem,
-            volume_label,
-            pvd,
-            hfs_mdb,
-            hfsplus_header,
+        Self::build(
+            path,
+            DiscFormat::Chd,
+            &mut reader,
             #[cfg(feature = "toc")]
             toc,
-        })
+        )
     }
 }
 
@@ -444,6 +458,63 @@ fn probe_hfs_detail(
         },
         _ => (None, None, None),
     }
+}
+
+/// Probe for an SGI Volume Header and, if present, find the byte offset of
+/// an EFS partition within the disc.
+///
+/// Returns `(sgi_header, efs_partition_offset, fs_type)`. The IRIX install
+/// CDs label their data partition with type byte 5 (SYSV) rather than 7
+/// (EFS), so we probe any non-wrapper partition for the EFS superblock magic
+/// at `first*512 + 512` (sb+28 = `0x00072959` / `0x0007295A`) and accept the
+/// first one that matches.
+fn probe_sgi_detail(
+    reader: &mut dyn SectorReader,
+) -> (Option<SgiVolumeHeader>, Option<u64>, Option<FilesystemType>) {
+    // Cheap magic check before parsing.
+    let magic_bytes = match reader.read_bytes(0, 4) {
+        Ok(b) => b,
+        Err(_) => return (None, None, None),
+    };
+    let magic = u32::from_be_bytes([
+        magic_bytes[0],
+        magic_bytes[1],
+        magic_bytes[2],
+        magic_bytes[3],
+    ]);
+    if magic != SGI_VOLHDR_MAGIC {
+        return (None, None, None);
+    }
+
+    let header = match SgiVolumeHeader::read_from(reader) {
+        Ok(h) => h,
+        Err(_) => return (None, None, None),
+    };
+
+    for entry in &header.partitions {
+        if entry.is_empty() {
+            continue;
+        }
+        let pt = entry.partition_type();
+        if pt.is_disk_wide_wrapper() {
+            continue;
+        }
+        // Probe partitions whose type is plausibly a filesystem. We probe
+        // EFS (7) and SYSV (5, used by IRIX install CDs) explicitly; any
+        // other type with a valid EFS superblock will also be accepted.
+        let byte_off = entry.start_offset();
+        let sb_off = byte_off + 512;
+        let sb = match reader.read_bytes(sb_off + 28, 4) {
+            Ok(b) => b,
+            Err(_) => continue,
+        };
+        let sb_magic = u32::from_be_bytes([sb[0], sb[1], sb[2], sb[3]]);
+        if sb_magic == EFS_MAGIC_OLD || sb_magic == EFS_MAGIC_NEW {
+            return (Some(header), Some(byte_off), Some(FilesystemType::Efs));
+        }
+    }
+
+    (Some(header), None, None)
 }
 
 /// Probe the filesystem type and extract a PVD if present.
@@ -740,6 +811,45 @@ mod tests {
         let (fs, offset) = resolve_apple_hfs(&mut reader, 0);
         assert_eq!(fs, FilesystemType::Unknown);
         assert_eq!(offset, 0);
+    }
+
+    #[test]
+    fn probe_sgi_detail_finds_efs_partition() {
+        use crate::sgi::tests::build_test_volhdr;
+        use crate::sgi::SgiPartitionType;
+
+        // Build a small disc image: SGI volhdr in sector 0, EFS superblock
+        // at partition first*512 + 512. Partition uses SYSV type byte 5 to
+        // mirror what the IRIX install CDs do.
+        const FIRST: u32 = 32;
+        let mut parts = vec![(0u32, 0u32, 0u32); 16];
+        parts[7] = (1000, FIRST, SgiPartitionType::SysV.as_u32());
+        let vh = build_test_volhdr(&parts);
+
+        // Allocate enough sectors to cover partition start + a few sb sectors.
+        let total_sectors = (FIRST as u64) + 8;
+        let mut img = vec![0u8; (total_sectors * SECTOR_SIZE) as usize];
+        img[..vh.len()].copy_from_slice(&vh);
+
+        // Write EFS magic at byte (FIRST*512 + 512 + 28).
+        let sb_magic_off = (FIRST as usize) * 512 + 512 + 28;
+        img[sb_magic_off..sb_magic_off + 4].copy_from_slice(&0x0007_2959u32.to_be_bytes());
+
+        let mut reader = CursorReader(Cursor::new(img));
+        let (hdr, off, fs) = probe_sgi_detail(&mut reader);
+        assert!(hdr.is_some());
+        assert_eq!(fs, Some(FilesystemType::Efs));
+        assert_eq!(off, Some((FIRST as u64) * 512));
+    }
+
+    #[test]
+    fn probe_sgi_detail_returns_none_without_sgi_magic() {
+        let img = vec![0u8; 4 * SECTOR_SIZE as usize];
+        let mut reader = CursorReader(Cursor::new(img));
+        let (hdr, off, fs) = probe_sgi_detail(&mut reader);
+        assert!(hdr.is_none());
+        assert!(off.is_none());
+        assert!(fs.is_none());
     }
 
     #[test]

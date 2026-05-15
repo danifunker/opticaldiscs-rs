@@ -87,25 +87,26 @@ EFS superblock layout (big-endian, alignment-padded, magic at sb+28):
 
 ## Phase B — Detection
 
-- [ ] Extend `detect.rs::probe_filesystem` with a new branch placed
-      **after** the HFS check and **before** the APM check:
-  - [ ] If `read_bytes(0, 4)` yields `0x0BE5A941`, parse the SGI volume
+- [x] Extend `detect.rs` with a `probe_sgi_detail` helper run alongside
+      `probe_hfs_detail`:
+  - [x] If `read_bytes(0, 4)` yields `0x0BE5A941`, parse the SGI volume
         header.
-  - [ ] Walk partition entries; for each entry whose type is EFS (7) **or
-        SYSV (5)** (covers the bundled IRIX install CDs), probe at
-        `first × 512 + 512`: read 32 bytes, check `u32` at offset 28
+  - [x] Walk partition entries; for each non-empty / non-wrapper entry
+        probe at `first × 512 + 512`: read 4 bytes at sb+28 and check
         against EFS magic `0x00072959` or `0x0007295A`. First hit wins.
-  - [ ] Return `(FilesystemType::Efs, None)` and stash the partition byte
-        offset for downstream consumers.
-- [ ] Extend `DiscImageInfo` (`detect.rs`):
-  - [ ] `pub sgi_header: Option<SgiVolumeHeader>`.
-  - [ ] `pub efs_partition_offset: Option<u64>` (byte offset within the
+        (Accepts any partition type; the IRIX install CDs use SYSV (5)
+        rather than EFS (7).)
+  - [x] Return `(SgiVolumeHeader, partition_offset, FilesystemType::Efs)`.
+- [x] Extend `DiscImageInfo` (`detect.rs`):
+  - [x] `pub sgi_header: Option<SgiVolumeHeader>`.
+  - [x] `pub efs_partition_offset: Option<u64>` (byte offset within the
         sector reader).
-- [ ] Populate the new fields in all three probe paths: `probe_iso`,
-      `probe_bincue`, `probe_chd`. Factor the SGI/EFS detail-probe into a
-      `probe_sgi_detail` helper alongside the existing `probe_hfs_detail`.
-- [ ] Unit test: synthetic image with SGI header + EFS superblock placed
-      at the partition offset is detected as `FilesystemType::Efs`.
+- [x] Populate the new fields in all three probe paths: `probe_iso`,
+      `probe_bincue`, `probe_chd`. Factored through a shared
+      `DiscImageInfo::build` helper.
+- [x] Unit tests: synthetic image with SGI header + EFS superblock placed
+      at the partition offset is detected as `FilesystemType::Efs`;
+      missing magic returns `None`.
 
 ## Phase C — EFS filesystem core (`src/efs.rs`)
 
