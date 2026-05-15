@@ -174,8 +174,8 @@ the existing sector readers already enforce 2048-byte alignment.
 
 ## Phase G — Docs
 
-- [ ] Update README with EFS in the supported-filesystem table.
-- [ ] Tick the checkboxes in this file as phases complete.
+- [x] Update README with EFS in the supported-filesystem table.
+- [x] Tick the checkboxes in this file as phases complete.
 
 ---
 
