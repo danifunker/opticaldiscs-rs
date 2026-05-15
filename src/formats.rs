@@ -67,6 +67,8 @@ pub enum FilesystemType {
     Hfs,
     /// HFS+ / Mac OS Extended (Mac OS X CDs and DVDs).
     HfsPlus,
+    /// SGI EFS (Extent File System) — IRIX install/distribution CDs.
+    Efs,
     /// Could not be determined.
     Unknown,
 }
@@ -80,13 +82,14 @@ impl FilesystemType {
             Self::Udf => "UDF",
             Self::Hfs => "HFS",
             Self::HfsPlus => "HFS+",
+            Self::Efs => "EFS",
             Self::Unknown => "Unknown",
         }
     }
 
     /// Returns true if this filesystem can be browsed by the library.
     pub fn is_browsable(self) -> bool {
-        matches!(self, Self::Iso9660 | Self::Hfs | Self::HfsPlus)
+        matches!(self, Self::Iso9660 | Self::Hfs | Self::HfsPlus | Self::Efs)
     }
 }
 

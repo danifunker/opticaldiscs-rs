@@ -17,6 +17,10 @@ pub mod hfs;
 pub mod hfsplus;
 pub mod mac_alias;
 
+// SGI EFS
+pub mod efs;
+
+pub use efs::EfsFilesystem;
 pub use entry::{EntryType, FileEntry};
 pub use filesystem::{Filesystem, FilesystemError};
 pub use hfs::HfsFilesystem;
@@ -52,6 +56,15 @@ pub fn open_disc_filesystem(info: &DiscImageInfo) -> Result<Box<dyn Filesystem>,
 
     match info.filesystem {
         FilesystemType::Iso9660 => Ok(Box::new(Iso9660Filesystem::new(reader)?)),
+
+        FilesystemType::Efs => {
+            let partition_offset = info.efs_partition_offset.ok_or_else(|| {
+                FilesystemError::InvalidData(
+                    "EFS detected but partition offset not recorded".into(),
+                )
+            })?;
+            Ok(Box::new(EfsFilesystem::new(reader, partition_offset)?))
+        }
 
         FilesystemType::Hfs | FilesystemType::HfsPlus => {
             // Use resolve_apple_hfs to get the correct offset — this handles
