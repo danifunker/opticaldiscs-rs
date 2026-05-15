@@ -32,12 +32,8 @@ use crate::hfs::MasterDirectoryBlock;
 use crate::hfsplus::{extract_volume_name_from_catalog, HfsPlusVolumeHeader};
 use crate::iso9660::PrimaryVolumeDescriptor;
 use crate::sector_reader::{BinCueSectorReader, ChdSectorReader, IsoSectorReader, SectorReader};
+use crate::efs::{EfsSuperblock, EFS_BLOCKSIZE, EFS_MAGIC_NEW, EFS_MAGIC_OLD};
 use crate::sgi::{SgiVolumeHeader, SGI_VOLHDR_MAGIC};
-
-/// EFS superblock magic values (old / new). Located at sb+28 due to natural-
-/// alignment padding in the C `struct efs_super` (see docs/EFS_Implementation.md).
-const EFS_MAGIC_OLD: u32 = 0x0007_2959;
-const EFS_MAGIC_NEW: u32 = 0x0007_295A;
 
 /// CHD magic bytes at offset 0.
 const CHD_MAGIC: &[u8; 8] = b"MComprHD";
@@ -178,16 +174,17 @@ impl DiscImageInfo {
     ) -> Result<Self> {
         let (mut filesystem, pvd) = probe_filesystem(reader)?;
         let (hfs_mdb, hfsplus_header, hfs_volume_label) = probe_hfs_detail(reader, filesystem);
-        let (sgi_header, efs_partition_offset, sgi_fs) = probe_sgi_detail(reader);
+        let sgi = probe_sgi_detail(reader);
         if filesystem == FilesystemType::Unknown {
-            if let Some(fs) = sgi_fs {
+            if let Some(fs) = sgi.filesystem {
                 filesystem = fs;
             }
         }
         let volume_label = pvd
             .as_ref()
             .map(|p| p.volume_id.clone())
-            .or(hfs_volume_label);
+            .or(hfs_volume_label)
+            .or(sgi.volume_label);
 
         Ok(Self {
             path: path.to_path_buf(),
@@ -197,8 +194,8 @@ impl DiscImageInfo {
             pvd,
             hfs_mdb,
             hfsplus_header,
-            sgi_header,
-            efs_partition_offset,
+            sgi_header: sgi.header,
+            efs_partition_offset: sgi.efs_partition_offset,
             #[cfg(feature = "toc")]
             toc,
         })
@@ -468,13 +465,23 @@ fn probe_hfs_detail(
 /// (EFS), so we probe any non-wrapper partition for the EFS superblock magic
 /// at `first*512 + 512` (sb+28 = `0x00072959` / `0x0007295A`) and accept the
 /// first one that matches.
-fn probe_sgi_detail(
-    reader: &mut dyn SectorReader,
-) -> (Option<SgiVolumeHeader>, Option<u64>, Option<FilesystemType>) {
-    // Cheap magic check before parsing.
+struct SgiProbe {
+    header: Option<SgiVolumeHeader>,
+    efs_partition_offset: Option<u64>,
+    filesystem: Option<FilesystemType>,
+    volume_label: Option<String>,
+}
+
+fn probe_sgi_detail(reader: &mut dyn SectorReader) -> SgiProbe {
+    let empty = SgiProbe {
+        header: None,
+        efs_partition_offset: None,
+        filesystem: None,
+        volume_label: None,
+    };
     let magic_bytes = match reader.read_bytes(0, 4) {
         Ok(b) => b,
-        Err(_) => return (None, None, None),
+        Err(_) => return empty,
     };
     let magic = u32::from_be_bytes([
         magic_bytes[0],
@@ -483,38 +490,49 @@ fn probe_sgi_detail(
         magic_bytes[3],
     ]);
     if magic != SGI_VOLHDR_MAGIC {
-        return (None, None, None);
+        return empty;
     }
 
     let header = match SgiVolumeHeader::read_from(reader) {
         Ok(h) => h,
-        Err(_) => return (None, None, None),
+        Err(_) => return empty,
     };
 
     for entry in &header.partitions {
         if entry.is_empty() {
             continue;
         }
-        let pt = entry.partition_type();
-        if pt.is_disk_wide_wrapper() {
+        if entry.partition_type().is_disk_wide_wrapper() {
             continue;
         }
-        // Probe partitions whose type is plausibly a filesystem. We probe
-        // EFS (7) and SYSV (5, used by IRIX install CDs) explicitly; any
-        // other type with a valid EFS superblock will also be accepted.
         let byte_off = entry.start_offset();
-        let sb_off = byte_off + 512;
-        let sb = match reader.read_bytes(sb_off + 28, 4) {
+        let sb_byte = byte_off + EFS_BLOCKSIZE;
+        let sb = match reader.read_bytes(sb_byte, EFS_BLOCKSIZE as usize) {
             Ok(b) => b,
             Err(_) => continue,
         };
-        let sb_magic = u32::from_be_bytes([sb[0], sb[1], sb[2], sb[3]]);
+        let sb_magic = u32::from_be_bytes([sb[28], sb[29], sb[30], sb[31]]);
         if sb_magic == EFS_MAGIC_OLD || sb_magic == EFS_MAGIC_NEW {
-            return (Some(header), Some(byte_off), Some(FilesystemType::Efs));
+            // Extract the EFS volume label for DiscImageInfo.
+            let label = EfsSuperblock::parse(&sb)
+                .ok()
+                .map(|s| s.label())
+                .filter(|l| !l.is_empty());
+            return SgiProbe {
+                header: Some(header),
+                efs_partition_offset: Some(byte_off),
+                filesystem: Some(FilesystemType::Efs),
+                volume_label: label,
+            };
         }
     }
 
-    (Some(header), None, None)
+    SgiProbe {
+        header: Some(header),
+        efs_partition_offset: None,
+        filesystem: None,
+        volume_label: None,
+    }
 }
 
 /// Probe the filesystem type and extract a PVD if present.
@@ -836,20 +854,20 @@ mod tests {
         img[sb_magic_off..sb_magic_off + 4].copy_from_slice(&0x0007_2959u32.to_be_bytes());
 
         let mut reader = CursorReader(Cursor::new(img));
-        let (hdr, off, fs) = probe_sgi_detail(&mut reader);
-        assert!(hdr.is_some());
-        assert_eq!(fs, Some(FilesystemType::Efs));
-        assert_eq!(off, Some((FIRST as u64) * 512));
+        let probe = probe_sgi_detail(&mut reader);
+        assert!(probe.header.is_some());
+        assert_eq!(probe.filesystem, Some(FilesystemType::Efs));
+        assert_eq!(probe.efs_partition_offset, Some((FIRST as u64) * 512));
     }
 
     #[test]
     fn probe_sgi_detail_returns_none_without_sgi_magic() {
         let img = vec![0u8; 4 * SECTOR_SIZE as usize];
         let mut reader = CursorReader(Cursor::new(img));
-        let (hdr, off, fs) = probe_sgi_detail(&mut reader);
-        assert!(hdr.is_none());
-        assert!(off.is_none());
-        assert!(fs.is_none());
+        let probe = probe_sgi_detail(&mut reader);
+        assert!(probe.header.is_none());
+        assert!(probe.efs_partition_offset.is_none());
+        assert!(probe.filesystem.is_none());
     }
 
     #[test]

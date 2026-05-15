@@ -155,19 +155,22 @@ the existing sector readers already enforce 2048-byte alignment.
 
 ## Phase F — Tests & fixtures
 
-- [ ] Commit a small synthetic EFS fixture under `tests/fixtures/`:
-  - [ ] `efs_synth.img` — hand-built, ≤ 512 KiB. SGI volume header +
-        EFS partition with: 2-3 files at the root, one subdirectory
-        with one nested file, one symlink. Built by a `#[cfg(test)]`
-        builder helper so the buffer can be regenerated from code.
-- [ ] Integration test `tests/efs_synth.rs`:
-  - [ ] `DiscImageInfo::open` reports `format=Iso, filesystem=Efs`.
-  - [ ] Volume label and known file bytes match expectations.
-  - [ ] Browse descends into the subdirectory; symlink target resolves.
-- [ ] Env-var-gated integration test `tests/efs_irix_samples.rs`
-      (skipped unless `OPTICALDISCS_IRIX_CDS=~/irixCDs/` is set):
-  - [ ] Each of the five IRIX ISOs opens, reports `Efs`, lists `/`
-        without error, and exposes a non-empty volume label.
+- [x] Commit a deterministic synthetic-image builder in
+      `tests/common/mod.rs::build_synth_irix_disc` (192 KiB). Builds an
+      SGI volume header + EFS partition with: `data` (regular file),
+      `link` (symlink), `sub/` (subdirectory containing `nested`).
+- [x] Integration test `tests/efs_synth.rs` (6 tests):
+  - [x] `DiscImageInfo::open` reports `format=Iso, filesystem=Efs`.
+  - [x] Volume label `"synth:pack"` matches the EFS superblock fields.
+  - [x] Known file bytes (`0xAA` / `0xBB` fills) match read-back.
+  - [x] Browse descends into the subdirectory.
+  - [x] Symlink target `"/usr/sbin/init"` resolves.
+  - [x] `read_resource_fork` returns `Ok(None)`.
+- [x] Env-var-gated `tests/efs_irix_samples.rs` (skipped unless
+      `OPTICALDISCS_IRIX_CDS` is set). Verified against all five
+      bundled IRIX CDs: each opens as EFS and lists a non-empty root.
+- [x] Example binary `examples/inspect_efs.rs` for quick visual
+      inspection of a disc image (browse demo).
 
 ## Phase G — Docs
 
