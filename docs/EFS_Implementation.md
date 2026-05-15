@@ -146,9 +146,11 @@ the existing sector readers already enforce 2048-byte alignment.
 
 ## Phase E — Public surface
 
-- [ ] Re-export `EfsSuperblock`, `EfsFilesystem`, `SgiVolumeHeader` from
+- [x] Re-export `EfsSuperblock`, `EfsExtent`, `EfsInode`, `EfsFilesystem`,
+      `SgiVolumeHeader`, `SgiPartitionEntry`, `SgiPartitionType` from
       `lib.rs`.
-- [ ] Update the README filesystem-support table to list EFS and SGI
+- [x] Update the crate-level doc comment to mention SGI EFS support.
+- [x] Update the README filesystem-support table to list EFS / SGI
       Volume Header (read-only browse + extract).
 
 ## Phase F — Tests & fixtures

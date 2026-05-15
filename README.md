@@ -7,7 +7,7 @@ Format-agnostic optical disc image reading and filesystem browsing for Rust.
 
 Provides a unified `SectorReader` abstraction that handles the cooked/raw sector
 translation across three container formats — **ISO**, **BIN/CUE**, and **CHD** — with
-filesystem browsers for **ISO 9660**, **HFS**, and **HFS+** on top.
+filesystem browsers for **ISO 9660**, **HFS**, **HFS+**, and **SGI EFS** on top.
 
 > **Status:** Early development. See [PLAN.md](PLAN.md) for the implementation roadmap.
 
@@ -22,6 +22,7 @@ filesystem browsers for **ISO 9660**, **HFS**, and **HFS+** on top.
 | Disc format + filesystem auto-detection | Phase 6 |
 | ISO 9660 filesystem browser | Phase 7 |
 | HFS / HFS+ filesystem browser | Phase 8 |
+| SGI Volume Header + EFS filesystem browser (IRIX CDs) | 0.3.0 |
 | Physical optical drive enumeration | Phase 9 (`drives` feature) |
 
 ## Quick Example

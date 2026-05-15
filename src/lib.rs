@@ -13,6 +13,7 @@
 //! - ISO 9660 (data CDs and DVDs)
 //! - HFS (classic Mac CDs)
 //! - HFS+ (Mac OS X CDs/DVDs)
+//! - SGI EFS (IRIX install/distribution CDs, via SGI Volume Header)
 //!
 //! # Feature Flags
 //!
@@ -97,4 +98,5 @@ pub use hfsplus::HfsPlusVolumeHeader;
 pub use sgi::{SgiPartitionEntry, SgiPartitionType, SgiVolumeHeader};
 
 // EFS
+pub use browse::EfsFilesystem;
 pub use efs::{EfsExtent, EfsInode, EfsSuperblock};
