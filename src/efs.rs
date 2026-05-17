@@ -20,9 +20,16 @@ pub const EFS_INODESIZE: u64 = 128;
 /// Inodes packed into one 512-byte block.
 pub const EFS_INODES_PER_BLOCK: u64 = EFS_BLOCKSIZE / EFS_INODESIZE; // 4
 
-/// Number of inline direct extents per inode. EFS has no indirect blocks, so
-/// this caps the addressable file size at 12 × 16 MiB = 192 MiB.
+/// Number of inline extent slots per inode. When `numextents <= 12` these are
+/// direct data extents. When `numextents > 12` EFS switches to indirect mode:
+/// the inline slots describe runs of disk blocks that themselves hold arrays
+/// of `EfsExtent` records (64 per 512-byte block), and `extents[0].offset` is
+/// hijacked to hold `direxts` — the number of inline slots actually used. See
+/// Linux `fs/efs/inode.c::efs_map_block`.
 pub const EFS_DIRECTEXTENTS: usize = 12;
+
+/// Number of `EfsExtent` records packed in one 512-byte indirect block.
+pub const EFS_EXTENTS_PER_BLOCK: usize = (EFS_BLOCKSIZE as usize) / 8;
 
 /// Old EFS magic ("efs1" era).
 pub const EFS_MAGIC_OLD: u32 = 0x0007_2959;

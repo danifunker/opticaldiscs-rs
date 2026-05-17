@@ -4,14 +4,18 @@
 //! [`SectorReader`]. Provides read-only directory listing, file reads, and
 //! symlink target resolution.
 //!
-//! EFS uses 12 inline direct extents per inode and has no indirect blocks,
-//! so per-file size is capped at 12 * 16 MiB = 192 MiB.
+//! EFS stores up to 12 extents inline in the inode. Files needing more than
+//! 12 extents switch to **indirect** mode: the inline slots describe runs of
+//! disk blocks containing arrays of `EfsExtent` records (64 per 512-byte
+//! block); `numextents` is the total data-extent count and
+//! `extents[0].offset` holds `direxts`, the number of inline slots actually
+//! used. See Linux `fs/efs/inode.c::efs_map_block`.
 
 use super::entry::{EntryType, FileEntry};
 use super::filesystem::{Filesystem, FilesystemError};
 use crate::efs::{
     inode_byte_offset, EfsExtent, EfsInode, EfsSuperblock, EFS_BLOCKSIZE, EFS_DIRBLK_HEADERSIZE,
-    EFS_DIRBLK_MAGIC, EFS_ROOT_INODE,
+    EFS_DIRBLK_MAGIC, EFS_DIRECTEXTENTS, EFS_EXTENTS_PER_BLOCK, EFS_ROOT_INODE,
 };
 use crate::error::OpticaldiscsError;
 use crate::sector_reader::SectorReader;
@@ -101,9 +105,75 @@ impl EfsFilesystem {
         Ok(Some(buf))
     }
 
-    /// Walk an inode's inline extents and copy `length` bytes starting at
-    /// `start_off` into `out`. Returns the number of bytes copied (may be
-    /// less than `length` if the requested range extends past file end).
+    /// Resolve an inode's data extents in file (logical) order, handling both
+    /// direct mode (`numextents <= 12`) and indirect mode (`numextents > 12`,
+    /// where the inline slots point at runs of indirect-extent blocks and
+    /// `extents[0].offset` holds the number of inline slots used).
+    fn resolve_data_extents(
+        &mut self,
+        inode: &EfsInode,
+    ) -> Result<Vec<EfsExtent>, FilesystemError> {
+        let total = inode.numextents as usize;
+        if total <= EFS_DIRECTEXTENTS {
+            let mut out: Vec<EfsExtent> = inode.extents.iter().take(total).copied().collect();
+            out.sort_by_key(|e| e.offset);
+            return Ok(out);
+        }
+        let direxts = inode.extents[0].offset as usize;
+        if direxts == 0 || direxts > EFS_DIRECTEXTENTS {
+            return Err(FilesystemError::InvalidData(format!(
+                "EFS inode {} indirect mode: bad direxts={direxts} (numextents={total})",
+                inode.inum
+            )));
+        }
+        let mut out: Vec<EfsExtent> = Vec::with_capacity(total);
+        'collect: for dirslot in 0..direxts {
+            let ind = inode.extents[dirslot];
+            for blk in 0..ind.length as u32 {
+                let bn = ind.bn + blk;
+                let byte = bn as u64 * EFS_BLOCKSIZE;
+                let block = self
+                    .reader
+                    .read_bytes(self.partition_offset + byte, EFS_BLOCKSIZE as usize)
+                    .map_err(disc_err)?;
+                if block.len() < EFS_BLOCKSIZE as usize {
+                    return Err(FilesystemError::InvalidData(format!(
+                        "EFS inode {} indirect block {bn}: short read ({} bytes)",
+                        inode.inum,
+                        block.len()
+                    )));
+                }
+                for slot in 0..EFS_EXTENTS_PER_BLOCK {
+                    let off = slot * 8;
+                    let raw: &[u8; 8] = (&block[off..off + 8]).try_into().unwrap();
+                    let ext = EfsExtent::parse(raw);
+                    if ext.magic != 0 {
+                        return Err(FilesystemError::InvalidData(format!(
+                            "EFS inode {} indirect extent slot {slot} in block {bn}: bad magic 0x{:02X}",
+                            inode.inum, ext.magic
+                        )));
+                    }
+                    out.push(ext);
+                    if out.len() == total {
+                        break 'collect;
+                    }
+                }
+            }
+        }
+        if out.len() != total {
+            return Err(FilesystemError::InvalidData(format!(
+                "EFS inode {} indirect: collected {} of {total} extents",
+                inode.inum,
+                out.len()
+            )));
+        }
+        out.sort_by_key(|e| e.offset);
+        Ok(out)
+    }
+
+    /// Walk an inode's data extents (direct or indirect) and copy `length`
+    /// bytes starting at `start_off`. Returns the bytes copied (may be less
+    /// than `length` if the requested range extends past file end).
     fn read_extent_range(
         &mut self,
         inode: &EfsInode,
@@ -118,13 +188,7 @@ impl EfsFilesystem {
         let want = (end - start_off) as usize;
         let mut out = Vec::with_capacity(want);
 
-        let mut extents: Vec<EfsExtent> = inode
-            .extents
-            .iter()
-            .take(inode.numextents as usize)
-            .copied()
-            .collect();
-        extents.sort_by_key(|e| e.offset);
+        let extents = self.resolve_data_extents(inode)?;
 
         for ext in &extents {
             // Logical byte range this extent covers in the file.
@@ -214,13 +278,7 @@ impl Filesystem for EfsFilesystem {
             return Err(FilesystemError::NotADirectory(entry.path.clone()));
         }
 
-        let mut extents: Vec<EfsExtent> = dir_ino
-            .extents
-            .iter()
-            .take(dir_ino.numextents as usize)
-            .copied()
-            .collect();
-        extents.sort_by_key(|e| e.offset);
+        let extents = self.resolve_data_extents(&dir_ino)?;
 
         let mut entries: Vec<FileEntry> = Vec::new();
         for ext in &extents {
