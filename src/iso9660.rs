@@ -18,6 +18,103 @@ const PVD_TYPE: u8 = 0x01;
 const VD_SET_TERMINATOR_TYPE: u8 = 0xFF;
 const ISO9660_ID: &[u8; 5] = b"CD001";
 
+/// A date/time decoded from a 17-byte ISO 9660 "dec-datetime" field
+/// (ECMA-119 §8.4.26.1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PvdDateTime {
+    /// Year, full four digits (e.g. 1997).
+    pub year: u16,
+    /// Month, 1–12.
+    pub month: u8,
+    /// Day of month, 1–31.
+    pub day: u8,
+    /// Hour, 0–23.
+    pub hour: u8,
+    /// Minute, 0–59.
+    pub minute: u8,
+    /// Second, 0–59.
+    pub second: u8,
+    /// Hundredths of a second, 0–99.
+    pub hundredths: u8,
+    /// GMT offset in 15-minute intervals (range -48..=52).
+    pub gmt_offset_quarter_hours: i8,
+}
+
+impl PvdDateTime {
+    /// Parse a 17-byte dec-datetime field.
+    ///
+    /// Returns `None` for the "not specified" encoding (all ASCII '0' with a
+    /// zero offset byte, or all 0x00) and for corrupt fields whose digit
+    /// groups are not actually ASCII digits.
+    pub fn parse(bytes: &[u8]) -> Option<Self> {
+        if bytes.len() < 17 {
+            return None;
+        }
+
+        // "Not specified": all 0x00, or all ASCII '0' with zero offset.
+        if bytes[..17].iter().all(|&b| b == 0) {
+            return None;
+        }
+        if bytes[..16].iter().all(|&b| b == b'0') && bytes[16] == 0 {
+            return None;
+        }
+
+        let year = parse_digits(&bytes[0..4])? as u16;
+        let month = parse_digits(&bytes[4..6])? as u8;
+        let day = parse_digits(&bytes[6..8])? as u8;
+        let hour = parse_digits(&bytes[8..10])? as u8;
+        let minute = parse_digits(&bytes[10..12])? as u8;
+        let second = parse_digits(&bytes[12..14])? as u8;
+        let hundredths = parse_digits(&bytes[14..16])? as u8;
+        let gmt_offset_quarter_hours = bytes[16] as i8;
+
+        Some(Self {
+            year,
+            month,
+            day,
+            hour,
+            minute,
+            second,
+            hundredths,
+            gmt_offset_quarter_hours,
+        })
+    }
+
+    /// Render as the ISO-8601 string redump uses, e.g.
+    /// `1997-03-18T16:45:47.00+00:00`.
+    pub fn to_iso8601(&self) -> String {
+        let total_minutes = self.gmt_offset_quarter_hours as i32 * 15;
+        let sign = if total_minutes < 0 { '-' } else { '+' };
+        let abs = total_minutes.abs();
+        format!(
+            "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{:02}{}{:02}:{:02}",
+            self.year,
+            self.month,
+            self.day,
+            self.hour,
+            self.minute,
+            self.second,
+            self.hundredths,
+            sign,
+            abs / 60,
+            abs % 60,
+        )
+    }
+}
+
+/// Parse a group of ASCII decimal digits into a `u32`, returning `None` if any
+/// byte is not an ASCII digit.
+fn parse_digits(bytes: &[u8]) -> Option<u32> {
+    let mut value = 0u32;
+    for &b in bytes {
+        if !b.is_ascii_digit() {
+            return None;
+        }
+        value = value * 10 + (b - b'0') as u32;
+    }
+    Some(value)
+}
+
 /// Information extracted from an ISO 9660 Primary Volume Descriptor.
 #[derive(Debug, Clone)]
 pub struct PrimaryVolumeDescriptor {
@@ -39,6 +136,14 @@ pub struct PrimaryVolumeDescriptor {
     pub root_directory_lba: u32,
     /// Size of the root directory extent in bytes.
     pub root_directory_size: u32,
+    /// Volume creation date/time (PVD offset 813), `None` if not specified.
+    pub creation_date: Option<PvdDateTime>,
+    /// Volume modification date/time (PVD offset 830), `None` if not specified.
+    pub modification_date: Option<PvdDateTime>,
+    /// Volume expiration date/time (PVD offset 847), `None` if not specified.
+    pub expiration_date: Option<PvdDateTime>,
+    /// Volume effective date/time (PVD offset 864), `None` if not specified.
+    pub effective_date: Option<PvdDateTime>,
 }
 
 impl PrimaryVolumeDescriptor {
@@ -98,6 +203,12 @@ impl PrimaryVolumeDescriptor {
         let root_directory_lba = u32::from_le_bytes(rdr[2..6].try_into().unwrap());
         let root_directory_size = u32::from_le_bytes(rdr[10..14].try_into().unwrap());
 
+        // Volume date/time fields (ECMA-119 §8.4.26..29), each 17 bytes.
+        let creation_date = PvdDateTime::parse(&sector[813..830]);
+        let modification_date = PvdDateTime::parse(&sector[830..847]);
+        let expiration_date = PvdDateTime::parse(&sector[847..864]);
+        let effective_date = PvdDateTime::parse(&sector[864..881]);
+
         Ok(Self {
             volume_id,
             system_id,
@@ -108,6 +219,10 @@ impl PrimaryVolumeDescriptor {
             logical_block_size,
             root_directory_lba,
             root_directory_size,
+            creation_date,
+            modification_date,
+            expiration_date,
+            effective_date,
         })
     }
 
@@ -188,6 +303,66 @@ mod tests {
         assert_eq!(pvd.logical_block_size, 2048);
         assert_eq!(pvd.root_directory_lba, 20);
         assert_eq!(pvd.root_directory_size, 2048);
+    }
+
+    /// Write a 17-byte dec-datetime field into `sector` at `offset`.
+    fn write_datetime(sector: &mut [u8], offset: usize, ascii16: &[u8; 16], gmt: i8) {
+        sector[offset..offset + 16].copy_from_slice(ascii16);
+        sector[offset + 16] = gmt as u8;
+    }
+
+    #[test]
+    fn parse_creation_date() {
+        let mut sector = build_test_pvd_sector("DATED_DISC", 20, 2048);
+        write_datetime(&mut sector, 813, b"1997031816454700", 0);
+
+        let pvd = PrimaryVolumeDescriptor::parse(&sector).unwrap();
+        let dt = pvd.creation_date.expect("creation date present");
+        assert_eq!(dt.year, 1997);
+        assert_eq!(dt.month, 3);
+        assert_eq!(dt.day, 18);
+        assert_eq!(dt.hour, 16);
+        assert_eq!(dt.minute, 45);
+        assert_eq!(dt.second, 47);
+        assert_eq!(dt.hundredths, 0);
+        assert_eq!(dt.gmt_offset_quarter_hours, 0);
+        assert_eq!(dt.to_iso8601(), "1997-03-18T16:45:47.00+00:00");
+    }
+
+    #[test]
+    fn parse_date_not_specified() {
+        // All ASCII '0' with zero offset → None.
+        let mut sector = build_test_pvd_sector("X", 20, 2048);
+        write_datetime(&mut sector, 813, b"0000000000000000", 0);
+        let pvd = PrimaryVolumeDescriptor::parse(&sector).unwrap();
+        assert_eq!(pvd.creation_date, None);
+
+        // All 0x00 (default fixture state) → None.
+        let sector = build_test_pvd_sector("X", 20, 2048);
+        let pvd = PrimaryVolumeDescriptor::parse(&sector).unwrap();
+        assert_eq!(pvd.creation_date, None);
+        assert_eq!(pvd.modification_date, None);
+        assert_eq!(pvd.expiration_date, None);
+        assert_eq!(pvd.effective_date, None);
+    }
+
+    #[test]
+    fn parse_negative_gmt_offset() {
+        let mut sector = build_test_pvd_sector("X", 20, 2048);
+        // -28 quarter-hours = -07:00
+        write_datetime(&mut sector, 813, b"1997031816454700", -28);
+        let pvd = PrimaryVolumeDescriptor::parse(&sector).unwrap();
+        let dt = pvd.creation_date.unwrap();
+        assert_eq!(dt.gmt_offset_quarter_hours, -28);
+        assert_eq!(dt.to_iso8601(), "1997-03-18T16:45:47.00-07:00");
+    }
+
+    #[test]
+    fn parse_date_rejects_non_digits() {
+        let mut sector = build_test_pvd_sector("X", 20, 2048);
+        write_datetime(&mut sector, 813, b"19X7031816454700", 0);
+        let pvd = PrimaryVolumeDescriptor::parse(&sector).unwrap();
+        assert_eq!(pvd.creation_date, None);
     }
 
     #[test]
