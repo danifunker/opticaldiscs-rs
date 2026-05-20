@@ -11,6 +11,30 @@ filesystem browsers for **ISO 9660**, **HFS**, **HFS+**, and **SGI EFS** on top.
 
 > **Status:** Early development. See [PLAN.md](PLAN.md) for the implementation roadmap.
 
+## CHD support
+
+opticaldiscs-rs reads CHD optical images via [libchdman-rs](https://github.com/danifunker/libchdman-rs),
+which wraps MAME's official `chd_file` core. This provides byte-for-byte
+parity with the `chdman` tool — including subcode handling, audio
+byte-swapping, and per-track frame semantics — at the cost of needing
+to link MAME's C++ code.
+
+By default, opticaldiscs-rs enables libchdman-rs's `prebuilt` feature,
+which downloads a pre-built static archive matching the build target
+from libchdman-rs's GitHub Releases instead of compiling MAME from
+source. This keeps CI build times in seconds, not minutes.
+
+### When you might need to override prebuilt behavior
+
+| Situation | Set env var |
+|---|---|
+| Target triple isn't covered by libchdman-rs's prebuilt matrix | `LIBCHDMAN_PREBUILT_FALLBACK=1` |
+| Local development without network access | `LIBCHDMAN_FORCE_SOURCE=1` |
+| Linux: pick a specific glibc floor for the prebuilt archive | `LIBCHDMAN_GLIBC=2.31` (or `2.35`, `2.39`) |
+
+See [libchdman-rs's README](https://github.com/danifunker/libchdman-rs#pre-built-static-archives-faster-ci-builds)
+for the full list of supported targets, glibc floors, and escape hatches.
+
 ## Features
 
 | Capability | Status |

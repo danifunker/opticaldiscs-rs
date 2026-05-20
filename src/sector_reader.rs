@@ -158,100 +158,62 @@ impl SectorReader for BinCueSectorReader {
 
 /// `SectorReader` for CHD optical disc images.
 ///
-/// CHD files store CD-ROM data in 2448-byte frames (2352-byte raw sector +
-/// 96-byte subcode).  This reader translates logical 2048-byte sector
-/// addresses to physical hunk+offset addresses, decompressing hunks on demand
-/// and caching the most-recently-read hunk to avoid redundant work.
+/// Backed by [`libchdman_rs::cd::CdCookedReader`], which wraps MAME's
+/// `chd_file` core and yields a 2048-byte cooked stream for the selected
+/// track. Multi-track CHDs are supported: the 1-based track number from
+/// [`crate::chd::ChdTrack`] is translated to libchdman-rs's 0-based index.
 ///
 /// Create one via [`ChdSectorReader::open`] by passing the path to the `.chd`
 /// file and the data track obtained from [`crate::chd::open_chd`].
 pub struct ChdSectorReader {
-    chd: chd::Chd<BufReader<File>>,
-    hunk_size: u32,
-    /// Byte offset in the CHD data stream where the track starts.
-    /// = track.frame_offset × [`crate::chd::CHD_CD_FRAME_SIZE`]
-    track_byte_offset: u64,
-    /// Byte offset to user data within each 2448-byte CHD frame.
-    data_offset: u64,
-    /// Index of the currently-buffered hunk, if any.
-    cached_hunk_index: Option<u32>,
-    /// Pre-allocated decompression output buffer (hunk_size bytes).
-    hunk_buf: Vec<u8>,
-    /// Pre-allocated decompression input buffer (reused across calls).
-    cmp_buf: Vec<u8>,
+    inner: libchdman_rs::cd::CdCookedReader,
 }
 
 impl ChdSectorReader {
     /// Open a CHD file and prepare to read sectors from `track`.
     ///
-    /// Opens a fresh file handle; call [`crate::chd::open_chd`] first to
-    /// obtain the [`crate::chd::ChdTrack`] to pass here.
+    /// Opens a fresh CHD handle and selects the requested track. Audio tracks
+    /// are rejected by libchdman-rs — pass a data track (use
+    /// [`crate::chd::ChdInfo::find_first_data_track`]).
     pub fn open(path: impl AsRef<Path>, track: &crate::chd::ChdTrack) -> Result<Self> {
-        let file = File::open(path.as_ref()).map_err(OpticaldiscsError::Io)?;
-        let chd = chd::Chd::open(BufReader::new(file), None)
+        let path = path.as_ref();
+
+        // Surface missing/unreadable files as Io rather than Chd.
+        std::fs::metadata(path).map_err(OpticaldiscsError::Io)?;
+
+        let path_str = path.to_str().ok_or_else(|| {
+            OpticaldiscsError::Chd(format!("non-UTF-8 CHD path: {}", path.display()))
+        })?;
+
+        let chd = libchdman_rs::Chd::open(path_str, false, None)
             .map_err(|e| OpticaldiscsError::Chd(format!("failed to open CHD: {e:?}")))?;
 
-        let hunk_size = chd.header().hunk_size();
-        let hunk_buf = chd.get_hunksized_buffer();
+        let track_index = track.track_no.checked_sub(1).ok_or_else(|| {
+            OpticaldiscsError::Chd(format!(
+                "invalid track_no {} (must be >= 1)",
+                track.track_no
+            ))
+        })?;
 
-        Ok(Self {
-            chd,
-            hunk_size,
-            track_byte_offset: track.frame_offset * crate::chd::CHD_CD_FRAME_SIZE,
-            data_offset: track.data_offset(),
-            cached_hunk_index: None,
-            hunk_buf,
-            cmp_buf: Vec::new(),
-        })
-    }
+        let inner =
+            libchdman_rs::cd::CdCookedReader::open_track(chd, track_index).map_err(|e| {
+                OpticaldiscsError::Chd(format!("open CHD track {}: {e:?}", track.track_no))
+            })?;
 
-    /// Ensure hunk `hunk_index` is loaded into `self.hunk_buf`.
-    ///
-    /// A no-op when the requested hunk is already cached.
-    fn load_hunk(&mut self, hunk_index: u32) -> Result<()> {
-        if self.cached_hunk_index == Some(hunk_index) {
-            return Ok(());
-        }
-        self.chd
-            .hunk(hunk_index)
-            .map_err(|e| OpticaldiscsError::Chd(format!("CHD hunk {hunk_index}: {e:?}")))?
-            .read_hunk_in(&mut self.cmp_buf, &mut self.hunk_buf)
-            .map_err(|e| OpticaldiscsError::Chd(format!("CHD hunk {hunk_index} read: {e:?}")))?;
-        self.cached_hunk_index = Some(hunk_index);
-        Ok(())
+        Ok(Self { inner })
     }
 }
 
 impl SectorReader for ChdSectorReader {
-    /// Read a 2048-byte cooked sector at `lba`.
-    ///
-    /// Computes the physical byte offset as:
-    /// `track_byte_offset + lba × 2448 + data_offset`
-    /// then decompresses the containing hunk(s) and extracts the sector data.
+    /// Read a 2048-byte cooked sector at `lba` (track-relative).
     fn read_sector(&mut self, lba: u64) -> Result<Vec<u8>> {
-        let physical_offset =
-            self.track_byte_offset + lba * crate::chd::CHD_CD_FRAME_SIZE + self.data_offset;
-
-        let hunk_index = (physical_offset / self.hunk_size as u64) as u32;
-        let offset_in_hunk = (physical_offset % self.hunk_size as u64) as usize;
-        let end = offset_in_hunk + SECTOR_SIZE as usize;
-
-        self.load_hunk(hunk_index)?;
-
-        if end <= self.hunk_buf.len() {
-            // Common case: sector is fully within a single hunk
-            Ok(self.hunk_buf[offset_in_hunk..end].to_vec())
-        } else {
-            // Sector spans two hunks — save the first part before overwriting the buffer
-            let first_part_len = self.hunk_buf.len() - offset_in_hunk;
-            let mut result = vec![0u8; SECTOR_SIZE as usize];
-            result[..first_part_len].copy_from_slice(&self.hunk_buf[offset_in_hunk..]);
-
-            self.load_hunk(hunk_index + 1)?;
-            let second_part_len = SECTOR_SIZE as usize - first_part_len;
-            result[first_part_len..].copy_from_slice(&self.hunk_buf[..second_part_len]);
-
-            Ok(result)
-        }
+        self.inner
+            .seek(SeekFrom::Start(lba * SECTOR_SIZE))
+            .map_err(OpticaldiscsError::Io)?;
+        let mut buf = vec![0u8; SECTOR_SIZE as usize];
+        self.inner
+            .read_exact(&mut buf)
+            .map_err(OpticaldiscsError::Io)?;
+        Ok(buf)
     }
 }
