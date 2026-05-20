@@ -20,7 +20,7 @@ cue_sheet = "0.3"
 libchdman-rs = { version = "0.287.0-l7", features = ["prebuilt"] }
 
 # optional: only needed with feature "toc"
-sha1   = { version = "0.10", optional = true }
+sha1   = { version = "0.11", optional = true }
 base64 = { version = "0.22", optional = true }
 
 [dev-dependencies]

@@ -44,14 +44,14 @@
         - name: Verify slim tarball contents
           run: |
             set -euo pipefail
-            cargo package --no-verify --list > /tmp/package-files.txt
+            cargo package --no-verify --allow-dirty --list > /tmp/package-files.txt
             echo "--- Files in tarball ---"
             cat /tmp/package-files.txt
             if grep -E '\.(bin|chd|iso|cue|so|dylib|dll|a)$' /tmp/package-files.txt; then
               echo "::error::Binary/fixture files in package — add to [package.exclude] in Cargo.toml."
               exit 1
             fi
-            cargo package --no-verify
+            cargo package --no-verify --allow-dirty
             size=$(stat -c%s target/package/opticaldiscs-*.crate)
             echo "Tarball size: $size bytes"
             if [ "$size" -gt 2097152 ]; then
