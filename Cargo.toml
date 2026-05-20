@@ -1,10 +1,10 @@
 [package]
 name = "opticaldiscs"
-version = "0.4.1"
+version = "0.4.2"
 edition = "2021"
 license = "GPL-3.0"
 description = "Format-agnostic optical disc image reading and filesystem browsing (ISO, BIN/CUE, CHD)"
-repository = "https://github.com/dani/opticaldiscs-rs"
+repository = "https://github.com/danifunker/opticaldiscs-rs"
 keywords = ["cd-rom", "dvd", "iso9660", "disc-image", "chd"]
 categories = ["filesystem", "encoding", "parser-implementations"]
 
