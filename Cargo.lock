@@ -527,8 +527,9 @@ checksum = "68ab91017fe16c622486840e4c83c9a37afeff978bd239b5293d61ece587de66"
 
 [[package]]
 name = "libchdman-rs"
-version = "0.287.0-l6"
-source = "git+https://github.com/danifunker/libchdman-rs?tag=v0.287.0-l6#1ea6409d6075c0c1d85df8b328af9ad161600c69"
+version = "0.287.0-l7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fe34138e7c9f2a433bc234c4b5ceba624032bc90b605f68b7680fcc5337057a2"
 dependencies = [
  "cc",
  "hex",
@@ -594,7 +595,7 @@ checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
 
 [[package]]
 name = "opticaldiscs"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "base64",
  "cue_sheet",
