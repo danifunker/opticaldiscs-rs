@@ -305,37 +305,59 @@ impl DiscImageInfo {
 
 /// Build a [`DiscTOC`] from a BIN/CUE track list.
 ///
-/// Recovers per-track frame offsets from the stored `file_byte_offset`, and
-/// computes the lead-out from the last track's BIN file size.  Returns `None`
-/// if the track list is empty or the BIN file size cannot be determined.
+/// A track's `file_byte_offset` is its INDEX 01 *relative to its own BIN file*.
+/// For a single-BIN CUE every track lives in the same file, so those offsets
+/// are already absolute disc positions.  For a multi-FILE CUE (one BIN per
+/// track, common in redump-style dumps) each offset is only the local pregap of
+/// that file, so we must accumulate a running frame total across files to
+/// recover absolute, strictly-increasing offsets.
+///
+/// We handle both layouts uniformly by tracking the cumulative frame count of
+/// all *previous* files and adding each track's local offset on top.  The
+/// lead-out is the total frame count across every BIN file.  Returns `None` if
+/// the track list is empty or a BIN file size cannot be determined.
 #[cfg(feature = "toc")]
 fn build_bincue_toc(tracks: &[crate::bincue::BinTrack]) -> Option<crate::toc::DiscTOC> {
     use crate::toc::{DiscTOC, TrackInfo};
+    use std::path::Path;
 
     if tracks.is_empty() {
         return None;
     }
 
-    let track_infos: Vec<TrackInfo> = tracks
-        .iter()
-        .map(|t| {
-            let offset_frames = (t.file_byte_offset / t.sector_size()) as u32;
-            TrackInfo {
-                number: t.track_no as u8,
-                offset: offset_frames,
-                track_type: t.track_type.cue_label().to_string(),
-            }
-        })
-        .collect();
+    let mut track_infos: Vec<TrackInfo> = Vec::with_capacity(tracks.len());
 
-    // Lead-out: last track start + frames in that track.
-    // For the last track in a single-BIN or per-track BIN, compute frames from
-    // the remaining bytes in the BIN file (handles both layouts).
-    let last = tracks.last()?;
-    let file_len = std::fs::metadata(&last.bin_path).ok()?.len();
-    let last_start_frames = last.file_byte_offset / last.sector_size();
-    let last_frames = file_len.saturating_sub(last.file_byte_offset) / last.sector_size();
-    let lead_out_raw = (last_start_frames + last_frames) as u32;
+    // Frames in all files seen *before* the current one.
+    let mut running_frames: u64 = 0;
+    // Frames in the file the current track belongs to.
+    let mut cur_file_frames: u64 = 0;
+    let mut prev_bin: Option<&Path> = None;
+
+    for t in tracks {
+        let sector_size = t.sector_size();
+
+        // When the BIN file changes, fold the previous file's full length into
+        // the running total and measure the new file.  Single-BIN CUEs take
+        // this branch exactly once (running_frames stays 0).
+        if prev_bin != Some(t.bin_path.as_path()) {
+            if prev_bin.is_some() {
+                running_frames += cur_file_frames;
+            }
+            let file_len = std::fs::metadata(&t.bin_path).ok()?.len();
+            cur_file_frames = file_len / sector_size;
+            prev_bin = Some(t.bin_path.as_path());
+        }
+
+        let local_frames = t.file_byte_offset / sector_size;
+        track_infos.push(TrackInfo {
+            number: t.track_no as u8,
+            offset: (running_frames + local_frames) as u32,
+            track_type: t.track_type.cue_label().to_string(),
+        });
+    }
+
+    // Lead-out = total frames across every file.
+    let lead_out_raw = (running_frames + cur_file_frames) as u32;
 
     DiscTOC::from_tracks(&track_infos, lead_out_raw)
 }
@@ -891,5 +913,123 @@ mod tests {
         let (fs, pvd) = probe_filesystem(&mut reader).unwrap();
         assert_eq!(fs, FilesystemType::HfsPlus);
         assert!(pvd.is_none());
+    }
+
+    // ── build_bincue_toc tests (feature = "toc") ──────────────────────────
+    //
+    // Regression coverage for multi-FILE BIN/CUE TOC offsets — see commit log
+    // for v0.4.3 "fix multi-FILE BIN/CUE TOC offsets".
+
+    #[cfg(feature = "toc")]
+    fn write_bin(dir: &std::path::Path, name: &str, frames: u64, sector_size: u64) -> PathBuf {
+        use std::io::Write;
+        let path = dir.join(name);
+        let mut f = std::fs::File::create(&path).unwrap();
+        let buf = vec![0u8; (frames * sector_size) as usize];
+        f.write_all(&buf).unwrap();
+        path
+    }
+
+    #[cfg(feature = "toc")]
+    #[test]
+    fn build_bincue_toc_multi_file_offsets_are_absolute() {
+        use crate::bincue::{BinTrack, TrackType};
+
+        let tmp = tempfile::tempdir().unwrap();
+        // 3 audio tracks, each in its own BIN, each with non-zero local pregap.
+        // File lengths (in frames): 20000, 15000, 10000.
+        // Local INDEX 01 frames: 0, 224, 148.  (224 = 00:02:74, 148 = 00:01:73)
+        let ss = TrackType::Audio.sector_size();
+        let p1 = write_bin(tmp.path(), "t1.bin", 20_000, ss);
+        let p2 = write_bin(tmp.path(), "t2.bin", 15_000, ss);
+        let p3 = write_bin(tmp.path(), "t3.bin", 10_000, ss);
+
+        let tracks = vec![
+            BinTrack {
+                track_no: 1,
+                track_type: TrackType::Audio,
+                bin_path: p1,
+                file_byte_offset: 0,
+                frame_count: 0,
+            },
+            BinTrack {
+                track_no: 2,
+                track_type: TrackType::Audio,
+                bin_path: p2,
+                file_byte_offset: 224 * ss,
+                frame_count: 0,
+            },
+            BinTrack {
+                track_no: 3,
+                track_type: TrackType::Audio,
+                bin_path: p3,
+                file_byte_offset: 148 * ss,
+                frame_count: 0,
+            },
+        ];
+
+        let toc = build_bincue_toc(&tracks).expect("toc");
+
+        // DiscTOC::from_tracks adds a 150-frame pregap to every offset and
+        // to the lead-out.  Raw offsets we fed: 0, 20000+224, 35000+148.
+        let offsets: Vec<u32> = toc.track_offsets.to_vec();
+        assert_eq!(offsets, vec![150, 20_224 + 150, 35_148 + 150]);
+
+        // Strictly increasing offsets (MusicBrainz requirement).
+        assert!(
+            offsets.windows(2).all(|w| w[0] < w[1]),
+            "offsets must increase: {offsets:?}"
+        );
+
+        // Lead-out = sum of all file frames + 150 pregap.
+        assert_eq!(toc.lead_out, 20_000 + 15_000 + 10_000 + 150);
+
+        // to_toc_string is also monotonic across track offsets.
+        // Format: "first_track+track_count+leadout+offset1+offset2+…"
+        let s = toc.to_toc_string();
+        let nums: Vec<u32> = s.split('+').skip(3).map(|n| n.parse().unwrap()).collect();
+        assert_eq!(nums, offsets);
+    }
+
+    #[cfg(feature = "toc")]
+    #[test]
+    fn build_bincue_toc_single_bin_unchanged() {
+        use crate::bincue::{BinTrack, TrackType};
+
+        // Single shared BIN: every track's file_byte_offset is already an
+        // absolute disc position, so behavior must match the pre-fix code.
+        let tmp = tempfile::tempdir().unwrap();
+        let ss = TrackType::Audio.sector_size();
+        let total_frames = 50_000u64;
+        let bin = write_bin(tmp.path(), "all.bin", total_frames, ss);
+
+        let tracks = vec![
+            BinTrack {
+                track_no: 1,
+                track_type: TrackType::Audio,
+                bin_path: bin.clone(),
+                file_byte_offset: 0,
+                frame_count: 20_000,
+            },
+            BinTrack {
+                track_no: 2,
+                track_type: TrackType::Audio,
+                bin_path: bin.clone(),
+                file_byte_offset: 20_000 * ss,
+                frame_count: 15_000,
+            },
+            BinTrack {
+                track_no: 3,
+                track_type: TrackType::Audio,
+                bin_path: bin,
+                file_byte_offset: 35_000 * ss,
+                frame_count: 15_000,
+            },
+        ];
+
+        let toc = build_bincue_toc(&tracks).expect("toc");
+        let offsets: Vec<u32> = toc.track_offsets.to_vec();
+        assert_eq!(offsets, vec![150, 20_000 + 150, 35_000 + 150]);
+        assert_eq!(toc.lead_out, total_frames as u32 + 150);
     }
 }
