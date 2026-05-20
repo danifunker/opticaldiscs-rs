@@ -93,7 +93,7 @@
           run: |
             set -euo pipefail
             if [ "$DRY_RUN" = "true" ]; then
-              cargo publish --dry-run
+              cargo publish  --dry-run --allow-dirty
             else
-              cargo publish
+              cargo publish --allow-dirty
             fi
