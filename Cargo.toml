@@ -1,6 +1,6 @@
 [package]
 name = "opticaldiscs"
-version = "0.4.4"
+version = "0.4.5"
 edition = "2021"
 license = "GPL-3.0"
 description = "Format-agnostic optical disc image reading and filesystem browsing (ISO, BIN/CUE, CHD)"
@@ -17,7 +17,7 @@ drives = []                            # physical optical drive enumeration
 thiserror = "2"
 log       = "0.4"
 cue_sheet = "0.3"
-libchdman-rs = { version = "0.287.0-l7", features = ["prebuilt"] }
+libchdman-rs = { version = "0.288.5", features = ["prebuilt"] }
 
 # optional: only needed with feature "toc"
 sha1   = { version = "0.11", optional = true }

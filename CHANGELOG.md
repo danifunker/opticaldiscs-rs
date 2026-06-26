@@ -3,6 +3,20 @@
 All notable changes to this crate are documented here. This project follows
 [Semantic Versioning](https://semver.org/).
 
+## 0.4.5 — 2026-06-26
+
+### Changed
+
+- **Bumped `libchdman-rs` from `0.287.0-l7` to `0.288.5`.** No source changes —
+  the CHD API surface this crate uses (`Chd::open`, `cd::CdCookedReader::open` /
+  `open_track`, `cd::list_tracks`, `cd::TrackType`) is identical across the two
+  versions. The motivation is cross-compilation: `0.287.0-l7` ships no
+  `armv7-unknown-linux-gnueabihf` prebuilt, whereas `0.288.5` does
+  (`...-glibc2.31.a`), so downstreams that target MiSTer FPGA / Cortex-A9
+  (e.g. rusty-backup's `rb-cli-mini`) can now build the optical stack. Bumping
+  also lets a downstream that already uses `libchdman-rs 0.288.x` for CHD
+  *creation* dedupe onto a single libchdman copy.
+
 ## 0.4.3 — 2026-05-20
 
 ### Fixed
