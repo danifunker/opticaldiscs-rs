@@ -1,5 +1,9 @@
 # EFS (SGI Extent File System) Implementation Plan
 
+> **Status: complete — shipped in `0.3.0`.** All phases below are implemented and
+> tested; this document is kept as the design/historical record. The code lives in
+> `src/sgi.rs`, `src/efs.rs`, and `src/browse/efs.rs`.
+
 Read-only support for SGI Volume Header + EFS filesystems on optical disc
 images (ISO / BIN+CUE / CHD), parallel to the existing HFS/HFS+ path.
 

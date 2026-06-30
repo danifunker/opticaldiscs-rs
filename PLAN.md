@@ -1,20 +1,13 @@
 # opticaldiscs — Implementation Plan
 
-A format-agnostic Rust library for reading, browsing, and ripping optical disc images
-(ISO, BIN/CUE, CHD) and physical CD/DVD/Blu-ray drives.
+A format-agnostic Rust library for reading and browsing optical disc images
+(ISO, BIN/CUE, CHD), with physical CD/DVD/Blu-ray drive enumeration.
 
 ---
 
-## License Note
+## License
 
 This library is licensed **GPL-3.0**.
-
-- `rusty-backup` (AGPL-3.0) can depend on GPL-3.0 code ✓
-- `ODE-artwork-downloader` (GPL-3.0 per LICENSE file) can depend on GPL-3.0 code ✓
-
-**Action needed in ODE:** `Cargo.toml` currently states `license = "MIT"` but the
-actual `LICENSE` file is GPL-3.0. Update `Cargo.toml` to `license = "GPL-3.0"` for
-consistency.
 
 ---
 
@@ -25,7 +18,8 @@ consistency.
    no existing crate provides.
 2. ISO 9660, HFS, and HFS+ filesystem browsing on top of that abstraction.
 3. Physical optical drive enumeration (feature-flagged, platform-specific).
-4. All code is GUI-free; `rusty-backup` and `ODE` add their own application layers on top.
+4. All code is GUI-free and application-agnostic; consumers add their own
+   application layers on top.
 
 ---
 
@@ -48,6 +42,8 @@ opticaldiscs/
     apm.rs              — Apple Partition Map detection and partition offset
     hfs.rs              — HFS Master Directory Block
     hfsplus.rs          — HFS+ volume header, catalog B-tree root lookup
+    sgi.rs              — SGI Volume Header (IRIX disc partition table)
+    efs.rs              — SGI EFS on-disk structures (superblock, inode, extent)
     drives.rs           — OpticalDrive struct, list_drives()  [feature = "drives"]
     browse/
       mod.rs            — open_disc_filesystem() dispatcher
@@ -56,7 +52,13 @@ opticaldiscs/
       iso9660.rs        — ISO9660 directory listing + file reading
       hfs.rs            — HFS filesystem browser
       hfsplus.rs        — HFS+ filesystem browser
+      efs.rs            — SGI EFS filesystem browser
+      mac_alias.rs      — HFS/HFS+ alias-record (symlink target) resolution
 ```
+
+> EFS / SGI support (the `sgi.rs`, `efs.rs`, and `browse/efs.rs` modules) was added
+> after the original 12-phase plan as the `0.3.0` release. Its own implementation
+> plan lives in [docs/EFS_Implementation.md](docs/EFS_Implementation.md).
 
 ---
 
@@ -64,13 +66,13 @@ opticaldiscs/
 
 ```toml
 [dependencies]
-thiserror  = "2"
-log        = "0.4"
-cue_sheet  = "0.1"           # CUE sheet text parsing
-chd        = "0.2"           # CHD reading (optical hunk/track metadata)
+thiserror    = "2"
+log          = "0.4"
+cue_sheet    = "0.3"                              # CUE sheet text parsing
+libchdman-rs = { version = "0.288.7", features = ["prebuilt"] }  # CHD reading via MAME chd_file
 
 # Optional — only with feature "toc"
-sha1       = { version = "0.10", optional = true }
+sha1       = { version = "0.11", optional = true }
 base64     = { version = "0.22", optional = true }
 
 [features]
@@ -79,41 +81,27 @@ toc    = ["dep:sha1", "dep:base64"]   # MusicBrainz + FreeDB DiscID calculation
 drives = []                            # physical drive enumeration (platform-specific)
 ```
 
+> **Note:** CHD reading went through one swap. The original plan used the pure-Rust
+> `chd` crate; from `0.4.0` onward the crate reads CHDs via
+> [`libchdman-rs`](https://github.com/danifunker/libchdman-rs) (a binding over MAME's
+> official `chd_file` core) for byte-for-byte parity with `chdman`. See the README's
+> "CHD support" section and CHANGELOG for the prebuilt-archive details.
+
 ---
 
-## Integration Architecture
+## Consumers
 
-### rusty-backup (`src/optical/`)
-A thin application layer on top of this library — not part of opticaldiscs itself.
+This library is application- and GUI-agnostic; downstream projects build their own
+layers on top. Known consumers:
 
-```
-src/optical/
-  mod.rs          — re-exports + integration glue
-  rip.rs          — stream rip physical disc → ISO or BIN/CUE, with progress callback
-  convert.rs      — ISO ↔ BIN/CUE sector conversion; any → CHD via chdman subprocess
-  browse_view.rs  — OpticalDiscBrowseView (egui widget, mirrors existing BrowseView)
-```
+- **[ODE-artwork-downloader](https://github.com/danifunker/ODE-artwork-downloader)**
+  — disc detection, ISO/HFS browsing, and TOC/DiscID for cover-art lookup.
+- **[rusty-backup](https://github.com/danifunker/rusty-backup)** — physical-drive
+  enumeration and the sector readers, for disc ripping/conversion and an
+  optical-disc browse view.
 
-```
-src/gui/
-  optical_tab.rs  — new "Optical" tab: source picker, disc info, rip/convert UI
-```
-
-### ODE-artwork-downloader (`src/disc/`)
-Replace the lower-level files with opticaldiscs; keep the high-level ODE-specific layer.
-
-```
-KEEP:   src/disc/reader.rs      — DiscInfo, DiscReader (ODE-specific artwork fields)
-KEEP:   src/disc/identifier.rs  — game title parsing from filename
-REMOVE: src/disc/iso9660.rs     → replaced by opticaldiscs::iso9660
-REMOVE: src/disc/bincue.rs      → replaced by opticaldiscs::bincue + sector_reader
-REMOVE: src/disc/chd.rs         → replaced by opticaldiscs::chd + sector_reader
-REMOVE: src/disc/toc.rs         → replaced by opticaldiscs::toc
-REMOVE: src/disc/apm.rs         → replaced by opticaldiscs::apm
-REMOVE: src/disc/hfs.rs         → replaced by opticaldiscs::hfs
-REMOVE: src/disc/hfsplus.rs     → replaced by opticaldiscs::hfsplus
-REMOVE: src/disc/browse/*       → replaced by opticaldiscs::browse
-```
+How each consumer integrates with (or migrates onto) this crate is tracked in that
+project's own repository, not in this plan.
 
 ---
 
@@ -144,7 +132,6 @@ Progress key: `[ ]` pending · `[x]` done · `[-]` skipped/deferred
 
 ### Phase 1 — Core Types ✅
 **Goal:** The shared enums, error type, and entry type that everything else depends on.
-Ported from `ODE/src/disc/formats.rs`, `browse/entry.rs`, `browse/filesystem.rs`.
 
 - [x] **1.1** `src/formats.rs`
   - `DiscFormat` enum: `Iso`, `BinCue`, `Chd`, `MdsMdf`
@@ -178,8 +165,7 @@ Ported from `ODE/src/disc/formats.rs`, `browse/entry.rs`, `browse/filesystem.rs`
 
 ### Phase 2 — SectorReader + ISO File Reader ✅
 **Goal:** Read cooked 2048-byte sectors from a plain `.iso` file; parse the ISO 9660
-Primary Volume Descriptor. Ported from `ODE/src/disc/browse/reader.rs` (IsoSectorReader)
-and `ODE/src/disc/iso9660.rs`.
+Primary Volume Descriptor.
 
 - [x] **2.1** `src/sector_reader.rs` — `SectorReader` trait
   - `read_sector(&mut self, lba: u64) -> Result<Vec<u8>, OpticaldiscsError>`
@@ -216,8 +202,6 @@ label; `PrimaryVolumeDescriptor::read_from(&mut reader)` works on any ISO file.
 ### Phase 3 — BIN/CUE Sector Reader ✅
 **Goal:** Read sectors from a `.bin` file using a `.cue` sheet; support both raw
 2352-byte and cooked 2048-byte tracks; generate a single-BIN CUE output.
-Ported from `ODE/src/disc/bincue.rs` and `ODE/src/disc/browse/reader.rs`
-(BinCueSectorReader).
 
 - [x] **3.1** `src/bincue.rs` — CUE parsing
   - Use `cue_sheet` crate to parse the CUE text
@@ -256,7 +240,13 @@ now works for `.cue` files.
 
 ### Phase 4 — CHD Sector Reader ✅
 **Goal:** Read sectors from a `.chd` optical disc image via the `chd` crate.
-Ported from `ODE/src/disc/chd.rs` and `ODE/src/disc/browse/reader.rs` (ChdSectorReader).
+
+> **Superseded (0.4.0):** the bullets below describe the original pure-Rust `chd`
+> crate implementation. The CHD path was later reimplemented on
+> [`libchdman-rs`](https://github.com/danifunker/libchdman-rs): `src/chd.rs` opens
+> via `libchdman_rs::Chd::open` and lists tracks with `libchdman_rs::cd::list_tracks`,
+> and `ChdSectorReader` now wraps `libchdman_rs::cd::CdCookedReader` (MAME's
+> `chd_file` core) instead of decompressing hunks itself.
 
 - [x] **4.1** `src/chd.rs` — CHD metadata parsing
   - Open CHD via `chd::Chd::open()`
@@ -292,7 +282,6 @@ The same ISO9660 / HFS code works regardless of container.
 
 ### Phase 5 — TOC & Disc Metadata  *(feature = "toc")* ✅
 **Goal:** Represent a disc's Table of Contents; calculate MusicBrainz and FreeDB IDs.
-Ported from `ODE/src/disc/toc.rs`.
 
 - [x] **5.1** `src/toc.rs` — `DiscTOC`
   - `first_track`, `last_track`, `lead_out` (frames), `track_offsets: Vec<u32>`
@@ -326,9 +315,8 @@ Ported from `ODE/src/disc/toc.rs`.
   - 58 unit + 14 integration + 2 doc-tests = 74 total passing
   - `cargo clippy --features toc` and `cargo fmt --check` clean
 
-**Deliverable:** Audio CD metadata fully supported; ODE can replace its `toc.rs` with
-this module. Key correctness fix over ODE: proper MB base64 encoding (28 chars, `.`
-not `-` for position-62, trailing `-` for padding).
+**Deliverable:** Audio CD metadata fully supported. Note the MB base64 encoding is the
+correct variant (28 chars, `.` not `-` for position-62, trailing `-` for padding).
 
 ---
 
@@ -365,7 +353,7 @@ get everything they need about a disc image.
 
 ### Phase 7 — ISO 9660 Filesystem Browser ✅
 **Goal:** Browse directories and read files from any ISO 9660 disc image regardless of
-container. Ported from `ODE/src/disc/browse/iso9660_fs.rs`.
+container.
 
 - [x] **7.1** `src/browse/iso9660.rs` — `Iso9660Filesystem`
   - Constructor: `new(reader: Box<dyn SectorReader>) -> Result<Self, FilesystemError>`
@@ -399,9 +387,8 @@ for ISO images (plain ISO, BIN/CUE, and CHD containers).
 
 ---
 
-### Phase 8 — HFS and HFS+ Browsers
+### Phase 8 — HFS and HFS+ Browsers ✅
 **Goal:** Browse directories on Apple HFS and HFS+ disc images (classic Mac CDs).
-Ported from `ODE/src/disc/browse/hfs_fs.rs` and `hfsplus_fs.rs`.
 
 - [x] **8.1** `src/apm.rs`
   - `PartitionEntry` struct: name, partition_type, start_block, block_count
@@ -446,7 +433,7 @@ Ported from `ODE/src/disc/browse/hfs_fs.rs` and `hfsplus_fs.rs`.
 
 ---
 
-### Phase 9 — Physical Drive Enumeration  *(feature = "drives")*
+### Phase 9 — Physical Drive Enumeration  *(feature = "drives")* ✅
 **Goal:** List available optical drives on the current system.
 
 - [x] **9.1** `src/drives.rs` — `OpticalDrive` struct
@@ -479,119 +466,20 @@ three platforms.
 
 ---
 
-### Phase 10 — Migrate ODE to opticaldiscs ✅
-**Goal:** ODE-artwork-downloader stops maintaining its own disc layer and depends on
-this library instead.
+## Publishing to crates.io ✅
 
-- [x] **10.1** In ODE `Cargo.toml`: add `opticaldiscs = { path = "../opticaldiscs-rs", features = ["toc"] }`
-- [x] **10.2** Fix ODE `Cargo.toml` license field: change `"MIT"` → `"GPL-3.0"`
-- [x] **10.3** Rewrite `ODE/src/disc/reader.rs`:
-  - Replace internal `read_iso()` / `read_bin_cue()` / `read_chd()` calls with
-    `opticaldiscs::detect::DiscImageInfo::open()`
-  - `DiscInfo` gains fields from `DiscImageInfo`; ODE-specific fields (title,
-    confidence, parsed_filename, cover_art_path) remain in ODE
-- [x] **10.4** Delete from ODE: `iso9660.rs`, `bincue.rs`, `chd.rs`, `toc.rs`,
-              `apm.rs`, `hfs.rs`, `hfsplus.rs`, `browse/` (all replaced)
-- [x] **10.5** Update `browse_view.rs` in ODE to call `opticaldiscs::browse::open_disc_filesystem()`
-- [x] **10.6** Run ODE test suite; fix any regressions (50 passed, 0 failed)
-- [x] **10.7** Verify ODE disc browsing still works on ISO, BIN/CUE, and CHD fixtures
+Published on [crates.io](https://crates.io/crates/opticaldiscs) — first release
+`0.4.2` (2026-05-19), current `0.4.5`. Releases are cut by the
+`.github/workflows/publish-crates-io.yml` workflow (`workflow_dispatch`), which
+derives the tag from `Cargo.toml`, verifies a slim (≤ 2 MB, no binary fixtures)
+tarball, creates the GitHub Release, and runs `cargo publish`.
 
-**Deliverable:** ODE is slimmer, and any improvements to opticaldiscs immediately
-benefit ODE.
-
----
-
-### Phase 11 — Disc Ripping in rusty-backup
-**Goal:** rusty-backup can rip a physical disc to ISO or BIN/CUE.
-
-- [ ] **11.1** In rusty-backup `Cargo.toml`: add
-              `opticaldiscs = { git = "...", features = ["drives"] }`
-- [ ] **11.2** `src/optical/mod.rs` — new module, thin rusty-backup layer
-- [ ] **11.3** `src/optical/rip.rs` — `RipConfig` + `RipProgress`
-  - `RipConfig`: source (device_path), output_path, format (`RipFormat::Iso` or
-    `RipFormat::BinCue`), eject_after
-  - `RipProgress`: current_bytes, total_bytes, current_sector, total_sectors,
-    operation, finished, error, cancel_requested
-  - `run_rip(config: RipConfig, progress: Arc<Mutex<RipProgress>>, log_cb)` — runs
-    on a background thread
-  - ISO rip: open device, read 2048-byte sectors sequentially, write to `.iso`
-  - BIN/CUE rip: read raw 2352-byte sectors, write single `.bin`, generate `.cue` with
-    MODE1/2352 (or AUDIO for audio tracks); detect track boundaries from TOC
-
-- [ ] **11.4** Platform raw device read:
-  - Linux/macOS: `File::open(device_path)`, `read_exact` into 2352-byte or 2048-byte
-    buffers; on macOS use `dd` subprocess if direct open is restricted
-  - Windows: `CreateFile(\\.\D:)` with `GENERIC_READ` + `FILE_SHARE_READ`,
-    `DeviceIoControl(IOCTL_CDROM_READ_TOC)` for track info
-
-- [ ] **11.5** `src/optical/rip.rs` — TOC-aware track splitting for BIN/CUE
-  - Read TOC via `IOCTL_CDROM_READ_TOC` (Windows) or `ioctl(CDROMREADTOCHDR)` (Linux)
-    or `ioreg` (macOS)
-  - Mark track boundaries in the `.cue` file (`TRACK N AUDIO` vs `TRACK N MODE1/2352`)
-
-- [ ] **11.6** Tests: rip a known CD using a disc image loopback (or skip if no drive)
-
-**Deliverable:** rusty-backup can rip a physical disc to a local file.
-
----
-
-### Phase 12 — Format Conversion + GUI Tab in rusty-backup
-**Goal:** Convert between ISO, BIN/CUE, CHD; browse disc images in a new GUI tab.
-
-- [ ] **12.1** `src/optical/convert.rs` — ISO ↔ BIN/CUE
-  - `iso_to_bincue(iso_path, bin_path, cue_path)`:
-    - Reads 2048-byte cooked sectors
-    - Wraps each in a 2352-byte Mode 1 raw frame (12-byte sync + 4-byte header +
-      8-byte subheader + user data + 288-byte ECC/EDC)
-    - Writes single `.bin`, generates `MODE1/2352` CUE
-  - `bincue_to_iso(cue_path, iso_path)`:
-    - Uses `BinCueSectorReader`, strips headers, writes cooked sectors
-
-- [ ] **12.2** `src/optical/convert.rs` — any → CHD via chdman
-  - BIN/CUE → CHD: call `chdman createcd -i input.cue -o output.chd`
-  - ISO → CHD: synthesize a minimal CUE, then call chdman
-  - CHD → ISO: call `chdman extractcd`, then strip to ISO
-  - Use existing chdman detection from `src/rbformats/chd.rs`
-
-- [ ] **12.3** `src/optical/browse_view.rs` — `OpticalDiscBrowseView`
-  - Mirrors structure of existing `BrowseView` (no shared base class needed;
-    share patterns, not code)
-  - State: `disc_path`, loaded `Box<dyn Filesystem>`, current directory stack,
-    selected entry, scroll state
-  - `show()` method: renders directory tree, file list, file size, breadcrumb nav
-  - Lazy-loads directory contents (call `list_directory()` on expand)
-
-- [ ] **12.4** `src/gui/optical_tab.rs` — `OpticalTab` struct
-  - Source: `○ Physical drive [dropdown] [Refresh]` / `○ Existing file [path] [Browse…]`
-  - Disc info panel (auto-populated): format, filesystem, volume label, total size
-  - Action: `○ Rip/Save as [ISO] [BIN/CUE] [CHD]` / `○ Convert to [ISO] [BIN/CUE] [CHD]`
-  - Output file field + Browse button
-  - `[Browse Contents]` button → opens `OpticalDiscBrowseView` in a popup/panel
-  - Progress bar + cancel button
-  - Disables controls during active rip/convert
-
-- [ ] **12.5** Wire `optical_tab.rs` into `src/gui/mod.rs`
-  - Add `Tab::Optical` to `enum Tab`
-  - Add tab selector button `"Optical"` in the tab bar
-  - Add `optical_tab: OpticalTab` to `RustyBackupApp`
-  - Dispatch `Tab::Optical` in the update loop
-
-- [ ] **12.6** End-to-end test: open an ISO file in the Optical tab, browse its contents
-
-**Deliverable:** Full optical disc UI in rusty-backup: rip, convert, and browse.
-
----
-
-## Publishing to crates.io
-
-Publish after Phase 10 (ODE migration) validates the public API in production.
-
-- [ ] Ensure all public items have `///` doc comments
-- [ ] Run `cargo doc --open`, review generated docs
-- [ ] Add examples to `examples/` directory: `read_pvd.rs`, `browse_iso.rs`
-- [ ] Set `repository`, `documentation`, `keywords`, `categories` in `Cargo.toml`
-- [ ] Tag `v0.1.0`, run `cargo publish --dry-run`, then `cargo publish`
-- [ ] After publish, update both projects to use `opticaldiscs = "0.1"` from crates.io
+- [x] Ensure all public items have `///` doc comments
+- [x] Run `cargo doc`, review generated docs
+- [x] Add an example to `examples/` (`inspect_efs.rs`)
+- [x] Set `repository`, `keywords`, `categories` in `Cargo.toml`
+- [x] Publish to crates.io via the `publish-crates-io.yml` workflow
+- [x] Downstream consumers depend on `opticaldiscs = "0.4"` from crates.io
 
 ---
 
@@ -607,10 +495,6 @@ Phase 0  (scaffold)
               Phase 5  (TOC) ────────────────────────│
                                                      └── Phase 8  (HFS/HFS+ browsers)
 Phase 9 is independent of 7+8 (feature = "drives")
-
-Phase 10 (migrate ODE)      requires Phases 1-8 complete
-Phase 11 (ripping)          requires Phase 9 + Phase 10
-Phase 12 (GUI + convert)    requires Phase 11
 ```
 
 ---
@@ -619,9 +503,9 @@ Phase 12 (GUI + convert)    requires Phase 11
 
 | Fixture | Used in | Source |
 |---------|---------|--------|
-| `tests/fixtures/data.iso` | Phases 2, 6, 7 | Create with `mkisofs` or copy from ODE |
-| `tests/fixtures/data.bin` + `.cue` | Phases 3, 6 | Copy from ODE test assets |
-| `tests/fixtures/data.chd` | Phases 4, 6 | Create with `chdman createcd`, or copy from ODE |
+| `tests/fixtures/data.iso` | Phases 2, 6, 7 | Create with `mkisofs`, or build programmatically |
+| `tests/fixtures/data.bin` + `.cue` | Phases 3, 6 | Build programmatically (minimal Mode1/2352) |
+| `tests/fixtures/data.chd` | Phases 4, 6 | Create with `chdman createcd` |
 | `tests/fixtures/mac_hfs.iso` | Phase 8 | Classic Mac disc image |
 | `tests/fixtures/mac_hfsplus.iso` | Phase 8 | Mac OS X disc image |
 
@@ -630,6 +514,7 @@ if the repo will be public, or keep them in a separate `test-fixtures` branch.
 
 ---
 
-*Last updated: 2026-02-17*
-*Plan covers opticaldiscs v0.1.0 scope. Future versions may add UDF support,
-MDS/MDF format, and Blu-ray metadata.*
+*Last updated: 2026-06-30.*
+*All phases (0–9) are complete and shipped (current release `0.4.5` on crates.io);
+EFS / SGI support landed as `0.3.0` (see [docs/EFS_Implementation.md](docs/EFS_Implementation.md)).
+Future versions may add UDF support, MDS/MDF format, and Blu-ray metadata.*
