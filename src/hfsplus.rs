@@ -235,7 +235,9 @@ pub fn extract_volume_name_from_catalog(
                 })
                 .collect();
 
-            return Ok(String::from_utf16(&utf16).ok());
+            // Lossy decode keeps a partially-corrupt volume name visible
+            // instead of falling back to the generic placeholder.
+            return Ok(Some(String::from_utf16_lossy(&utf16)));
         }
 
         current = next;

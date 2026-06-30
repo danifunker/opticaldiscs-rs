@@ -20,10 +20,21 @@ pub struct FileEntry {
     /// Resource fork size in bytes. `None` for filesystems without resource
     /// forks (ISO 9660), `Some(0)` for HFS/HFS+ files with no resource fork.
     pub resource_fork_size: Option<u64>,
-    /// 4-byte Mac type code (e.g. `"TEXT"`). `None` for non-HFS filesystems.
-    pub type_code: Option<String>,
-    /// 4-byte Mac creator code (e.g. `"ttxt"`). `None` for non-HFS filesystems.
-    pub creator_code: Option<String>,
+    /// Raw 4-byte Mac Finder type code, exactly as stored on disk (e.g.
+    /// `*b"TEXT"`). `None` for non-HFS filesystems. Storing the raw bytes —
+    /// rather than a lossy display string — preserves high-bit/non-printable
+    /// codes verbatim, which is required to re-emit a file in MacBinary /
+    /// AppleDouble / BinHex form without corrupting its type. Use
+    /// [`Self::type_code_string`] for a human-readable rendering.
+    pub type_code: Option<[u8; 4]>,
+    /// Raw 4-byte Mac Finder creator code, exactly as stored on disk (e.g.
+    /// `*b"ttxt"`). `None` for non-HFS filesystems. See [`Self::type_code`].
+    /// Use [`Self::creator_code_string`] for a human-readable rendering.
+    pub creator_code: Option<[u8; 4]>,
+    /// HFS/HFS+ Finder flags (`FInfo.fdFlags`): a 16-bit field carrying bits such
+    /// as `isAlias` (`0x8000`), `isInvisible` (`0x4000`), `hasBundle` (`0x2000`),
+    /// and `hasCustomIcon` (`0x0400`). `None` for non-HFS filesystems.
+    pub finder_flags: Option<u16>,
     /// If this entry is an alias or symlink, the resolved target string for
     /// display. `None` for regular files.
     pub symlink_target: Option<String>,
@@ -65,13 +76,15 @@ impl FileEntry {
             resource_fork_size: None,
             type_code: None,
             creator_code: None,
+            finder_flags: None,
             symlink_target: None,
         }
     }
 
     /// Build a file entry with HFS/HFS+ metadata populated. `type_code` and
-    /// `creator_code` are the raw 4-byte Finder fields, formatted via
-    /// [`format_mac_code`].
+    /// `creator_code` are the raw 4-byte Finder fields (stored verbatim);
+    /// `finder_flags` is the `FInfo.fdFlags` field.
+    #[allow(clippy::too_many_arguments)] // metadata-rich HFS constructor
     pub fn new_hfs_file(
         name: String,
         path: String,
@@ -80,6 +93,7 @@ impl FileEntry {
         resource_fork_size: u64,
         type_code: [u8; 4],
         creator_code: [u8; 4],
+        finder_flags: u16,
     ) -> Self {
         Self {
             name,
@@ -89,8 +103,9 @@ impl FileEntry {
             location,
             children: None,
             resource_fork_size: Some(resource_fork_size),
-            type_code: Some(format_mac_code(type_code)),
-            creator_code: Some(format_mac_code(creator_code)),
+            type_code: Some(type_code),
+            creator_code: Some(creator_code),
+            finder_flags: Some(finder_flags),
             symlink_target: None,
         }
     }
@@ -106,6 +121,7 @@ impl FileEntry {
             resource_fork_size: None,
             type_code: None,
             creator_code: None,
+            finder_flags: None,
             symlink_target: None,
         }
     }
@@ -121,8 +137,22 @@ impl FileEntry {
             resource_fork_size: None,
             type_code: None,
             creator_code: None,
+            finder_flags: None,
             symlink_target: None,
         }
+    }
+
+    /// Human-readable rendering of [`Self::type_code`] via [`format_mac_code`]
+    /// (e.g. `"TEXT"`, or `"0x12345678"` for non-printable codes). `None` for
+    /// non-HFS entries.
+    pub fn type_code_string(&self) -> Option<String> {
+        self.type_code.map(format_mac_code)
+    }
+
+    /// Human-readable rendering of [`Self::creator_code`]. See
+    /// [`Self::type_code_string`].
+    pub fn creator_code_string(&self) -> Option<String> {
+        self.creator_code.map(format_mac_code)
     }
 
     pub fn is_directory(&self) -> bool {
@@ -222,6 +252,8 @@ mod tests {
         assert!(e.resource_fork_size.is_none());
         assert!(e.type_code.is_none());
         assert!(e.creator_code.is_none());
+        assert!(e.finder_flags.is_none());
+        assert!(e.type_code_string().is_none());
     }
 
     #[test]
@@ -234,12 +266,36 @@ mod tests {
             50,
             *b"TEXT",
             *b"ttxt",
+            0x4000, // isInvisible
         );
         assert_eq!(e.size, 100);
         assert_eq!(e.resource_fork_size, Some(50));
-        assert_eq!(e.type_code.as_deref(), Some("TEXT"));
-        assert_eq!(e.creator_code.as_deref(), Some("ttxt"));
+        // Raw bytes stored verbatim …
+        assert_eq!(e.type_code, Some(*b"TEXT"));
+        assert_eq!(e.creator_code, Some(*b"ttxt"));
+        assert_eq!(e.finder_flags, Some(0x4000));
+        // … and the display helper renders them.
+        assert_eq!(e.type_code_string().as_deref(), Some("TEXT"));
+        assert_eq!(e.creator_code_string().as_deref(), Some("ttxt"));
         assert_eq!(e.total_size(), 150);
+    }
+
+    #[test]
+    fn high_bit_type_code_round_trips_raw() {
+        // Prince of Persia-style creator with a high-bit byte (0xC4): the raw
+        // bytes survive, while the display helper falls back to hex.
+        let e = FileEntry::new_hfs_file(
+            "x".into(),
+            "/x".into(),
+            1,
+            1,
+            0,
+            *b"APPL",
+            [0x50, 0x6F, 0xC4, 0x50],
+            0,
+        );
+        assert_eq!(e.creator_code, Some([0x50, 0x6F, 0xC4, 0x50]));
+        assert_eq!(e.creator_code_string().as_deref(), Some("0x506FC450"));
     }
 
     #[test]

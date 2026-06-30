@@ -1,6 +1,7 @@
 # opticaldiscs
 
-[![CI](https://github.com/dani/opticaldiscs-rs/actions/workflows/ci.yml/badge.svg)](https://github.com/dani/opticaldiscs-rs/actions)
+[![crates.io](https://img.shields.io/crates/v/opticaldiscs.svg)](https://crates.io/crates/opticaldiscs)
+[![CI](https://github.com/danifunker/opticaldiscs-rs/actions/workflows/ci.yml/badge.svg)](https://github.com/danifunker/opticaldiscs-rs/actions)
 [![License: GPL-3.0](https://img.shields.io/badge/license-GPL--3.0-blue.svg)](LICENSE)
 
 Format-agnostic optical disc image reading and filesystem browsing for Rust.
@@ -9,7 +10,9 @@ Provides a unified `SectorReader` abstraction that handles the cooked/raw sector
 translation across three container formats — **ISO**, **BIN/CUE**, and **CHD** — with
 filesystem browsers for **ISO 9660**, **HFS**, **HFS+**, and **SGI EFS** on top.
 
-> **Status:** Early development. See [PLAN.md](PLAN.md) for the implementation roadmap.
+> **Status:** Published on [crates.io](https://crates.io/crates/opticaldiscs). Disc
+> reading, detection, and filesystem browsing are complete and in production use;
+> physical-disc ripping is the next milestone. See [PLAN.md](PLAN.md) for the roadmap.
 
 ## CHD support
 
@@ -39,15 +42,16 @@ for the full list of supported targets, glibc floors, and escape hatches.
 
 | Capability | Status |
 |---|---|
-| ISO sector reader | Phase 2 |
-| BIN/CUE sector reader (raw 2352-byte) | Phase 3 |
-| CHD sector reader | Phase 4 |
-| TOC + MusicBrainz/FreeDB DiscID | Phase 5 (`toc` feature) |
-| Disc format + filesystem auto-detection | Phase 6 |
-| ISO 9660 filesystem browser | Phase 7 |
-| HFS / HFS+ filesystem browser | Phase 8 |
-| SGI Volume Header + EFS filesystem browser (IRIX CDs) | 0.3.0 |
-| Physical optical drive enumeration | Phase 9 (`drives` feature) |
+| ISO sector reader | ✓ |
+| BIN/CUE sector reader (raw 2352-byte) | ✓ |
+| CHD sector reader (via libchdman-rs) | ✓ |
+| Disc format + filesystem auto-detection | ✓ |
+| ISO 9660 filesystem browser | ✓ |
+| ISO 9660 PVD date/time metadata (creation/modification/expiration/effective) | ✓ (since 0.4.4) |
+| HFS / HFS+ filesystem browser | ✓ |
+| SGI Volume Header + EFS filesystem browser (IRIX CDs) | ✓ (since 0.3.0) |
+| TOC + MusicBrainz/FreeDB DiscID | ✓ (`toc` feature) |
+| Physical optical drive enumeration | ✓ (`drives` feature) |
 
 ## Quick Example
 
@@ -69,11 +73,16 @@ for entry in fs.list_directory(&root)? {
 ## Cargo.toml
 
 ```toml
-# git dependency while API stabilises
-opticaldiscs = { git = "https://github.com/dani/opticaldiscs-rs" }
+opticaldiscs = "0.4"
 
 # with optional features
-opticaldiscs = { git = "...", features = ["toc", "drives"] }
+opticaldiscs = { version = "0.4", features = ["toc", "drives"] }
+```
+
+To track unreleased changes, depend on the git repository instead:
+
+```toml
+opticaldiscs = { git = "https://github.com/danifunker/opticaldiscs-rs" }
 ```
 
 ## Feature Flags
@@ -85,8 +94,8 @@ opticaldiscs = { git = "...", features = ["toc", "drives"] }
 
 ## Used By
 
-- [rusty-backup](https://github.com/dani/rusty-backup) — vintage disc backup/restore tool
-- [ODE-artwork-downloader](https://github.com/dani/ODE-artwork-downloader) — USBODE cover art downloader
+- [rusty-backup](https://github.com/danifunker/rusty-backup) — vintage disc backup/restore tool
+- [ODE-artwork-downloader](https://github.com/danifunker/ODE-artwork-downloader) — USBODE cover art downloader
 
 ## License
 

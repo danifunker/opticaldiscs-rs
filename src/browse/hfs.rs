@@ -572,6 +572,7 @@ fn process_leaf_node(
                     node[data_off + 38],
                     node[data_off + 39],
                 ]);
+                let finder_flags = u16::from_be_bytes([node[data_off + 12], node[data_off + 13]]);
                 entries.push(FileEntry::new_hfs_file(
                     name,
                     path,
@@ -580,8 +581,8 @@ fn process_leaf_node(
                     rsrc_logical_size as u64,
                     type_code,
                     creator_code,
+                    finder_flags,
                 ));
-                let finder_flags = u16::from_be_bytes([node[data_off + 12], node[data_off + 13]]);
                 let mut rsrc_extents = Vec::with_capacity(3);
                 for j in 0..3 {
                     let base = data_off + 86 + j * 4;
@@ -808,8 +809,8 @@ mod tests {
         assert_eq!(entries[0].size, 1024);
         assert_eq!(entries[0].location, 77);
         assert_eq!(entries[0].resource_fork_size, Some(256));
-        assert_eq!(entries[0].type_code.as_deref(), Some("TEXT"));
-        assert_eq!(entries[0].creator_code.as_deref(), Some("ttxt"));
+        assert_eq!(entries[0].type_code, Some(*b"TEXT"));
+        assert_eq!(entries[0].creator_code, Some(*b"ttxt"));
     }
 
     #[test]

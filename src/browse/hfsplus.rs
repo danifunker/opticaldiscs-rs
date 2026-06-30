@@ -161,8 +161,8 @@ impl HfsPlusFilesystem {
             };
             let entry = &mut entries[i];
 
-            let is_slnk = entry.type_code.as_deref() == Some(super::mac_alias::SLNK_TYPE)
-                && entry.creator_code.as_deref() == Some(super::mac_alias::RHAP_CREATOR);
+            let is_slnk = entry.type_code == Some(super::mac_alias::SLNK_TYPE)
+                && entry.creator_code == Some(super::mac_alias::RHAP_CREATOR);
             if is_slnk && meta.data_fork.logical_size > 0 && meta.data_fork.logical_size <= 4096 {
                 let len = meta.data_fork.logical_size as usize;
                 if let Ok(data) = self.read_fork_range(&meta.data_fork, 0, len) {
@@ -562,6 +562,7 @@ fn process_leaf_node(
                     node[data_off + 174],
                     node[data_off + 175],
                 ]);
+                let finder_flags = u16::from_be_bytes([node[data_off + 56], node[data_off + 57]]);
                 entries.push(FileEntry::new_hfs_file(
                     name,
                     path,
@@ -570,8 +571,8 @@ fn process_leaf_node(
                     rsrc_size,
                     type_code,
                     creator_code,
+                    finder_flags,
                 ));
-                let finder_flags = u16::from_be_bytes([node[data_off + 56], node[data_off + 57]]);
                 let data_fork = parse_fork(node, data_off + 88);
                 let resource_fork = parse_fork(node, data_off + 168);
                 metas.push(Some(HfsPlusFileMeta {
@@ -709,7 +710,9 @@ fn decode_utf16_be(bytes: &[u8]) -> String {
             }
         })
         .collect();
-    String::from_utf16(&utf16).unwrap_or_default()
+    // Lossy: a single malformed UTF-16 unit becomes U+FFFD rather than
+    // discarding the whole name (which would drop the entry from listings).
+    String::from_utf16_lossy(&utf16)
 }
 
 // ── Error conversion ──────────────────────────────────────────────────────────
@@ -815,8 +818,8 @@ mod tests {
         assert_eq!(e.size, 1024);
         assert_eq!(e.location, 77);
         assert_eq!(e.resource_fork_size, Some(512));
-        assert_eq!(e.type_code.as_deref(), Some("TEXT"));
-        assert_eq!(e.creator_code.as_deref(), Some("ttxt"));
+        assert_eq!(e.type_code, Some(*b"TEXT"));
+        assert_eq!(e.creator_code, Some(*b"ttxt"));
     }
 
     #[test]

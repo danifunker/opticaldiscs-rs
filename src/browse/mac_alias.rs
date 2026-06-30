@@ -13,10 +13,10 @@
 /// Finder flag bit indicating the file is an alias.
 pub const IS_ALIAS_FLAG: u16 = 0x8000;
 
-/// Type code for classic HFS+ UNIX symlinks.
-pub const SLNK_TYPE: &str = "slnk";
-/// Creator code for classic HFS+ UNIX symlinks.
-pub const RHAP_CREATOR: &str = "rhap";
+/// Type code for classic HFS+ UNIX symlinks (raw Finder type bytes).
+pub const SLNK_TYPE: [u8; 4] = *b"slnk";
+/// Creator code for classic HFS+ UNIX symlinks (raw Finder creator bytes).
+pub const RHAP_CREATOR: [u8; 4] = *b"rhap";
 
 fn read_u16_be(b: &[u8], i: usize) -> u16 {
     u16::from_be_bytes([b[i], b[i + 1]])
