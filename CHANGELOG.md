@@ -30,12 +30,17 @@ All notable changes to this crate are documented here. This project follows
 
 ### Changed
 
-- **Raised the `libchdman-rs` floor from `0.288.5` to `0.288.7`.** No source
-  changes — the CHD API this crate uses is identical — but `0.288.7` adds
-  prebuilt static archives for `aarch64-pc-windows-msvc` (Windows on ARM) and
-  `riscv64gc-unknown-linux-gnu` (RISC-V 64), so those targets build without
-  compiling MAME from source. Pinning the minimum guarantees the new prebuilts
-  rather than relying on the resolver picking the latest `0.288.x`.
+- **Raised the `libchdman-rs` floor from `0.288.5` to `0.288.8`.** No source
+  changes — the CHD API this crate uses is identical. `0.288.8` matters for two
+  reasons:
+  - **License compatibility.** `libchdman-rs` ≤ 0.288.7 declared `GPL-2.0-only`,
+    which is incompatible with this crate's `GPL-3.0` (a latent conflict since
+    `0.4.0`). `0.288.8` is relicensed `BSD-3-Clause` — matching the MAME chd
+    source it wraps — which is compatible with GPL-3.0 (and the AGPL-3.0
+    downstream). opticaldiscs stays GPL-3.0.
+  - **New targets.** `0.288.7`+ ships prebuilt static archives for
+    `aarch64-pc-windows-msvc` (Windows on ARM) and `riscv64gc-unknown-linux-gnu`
+    (RISC-V 64), so those build without compiling MAME from source.
 
 ### Added
 
