@@ -69,7 +69,7 @@ opticaldiscs/
 thiserror    = "2"
 log          = "0.4"
 cue_sheet    = "0.3"                              # CUE sheet text parsing
-libchdman-rs = { version = "0.288.7", features = ["prebuilt"] }  # CHD reading via MAME chd_file
+libchdman-rs = { version = "0.288.8", features = ["prebuilt"] }  # CHD reading via MAME chd_file
 
 # Optional — only with feature "toc"
 sha1       = { version = "0.11", optional = true }
