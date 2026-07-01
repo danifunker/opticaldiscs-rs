@@ -24,8 +24,13 @@ const MDB_OFFSET: u64 = 1024;
 /// Files, chapter 2).
 #[derive(Debug, Clone)]
 pub struct MasterDirectoryBlock {
-    /// Volume creation timestamp (seconds since the Mac OS epoch: 1904-01-01).
+    /// Volume creation timestamp (`drCrDate`; seconds since the Mac OS epoch:
+    /// 1904-01-01, local time).
     pub creation_date: u32,
+    /// Volume last-modification timestamp (`drLsMod`; secs since 1904, local).
+    pub modification_date: u32,
+    /// Volume last-backup timestamp (`drVolBkUp`; secs since 1904, local).
+    pub backup_date: u32,
     /// Number of files in the root directory.
     pub file_count: u16,
     /// Size of each allocation block in bytes.
@@ -71,6 +76,13 @@ impl MasterDirectoryBlock {
         // Bytes 2–5: drCrDate — volume creation date (u32 BE, Mac epoch).
         let creation_date = u32::from_be_bytes([data[2], data[3], data[4], data[5]]);
 
+        // Bytes 6–9: drLsMod — volume last-modification date (u32 BE, Mac epoch).
+        let modification_date = u32::from_be_bytes([data[6], data[7], data[8], data[9]]);
+
+        // Bytes 64–67: drVolBkUp — volume last-backup date (u32 BE, Mac epoch).
+        // (drVN Pascal string occupies bytes 36..64.)
+        let backup_date = u32::from_be_bytes([data[64], data[65], data[66], data[67]]);
+
         // Bytes 10–11: drNmFls — number of files in the root directory (u16 BE).
         let file_count = u16::from_be_bytes([data[10], data[11]]);
 
@@ -100,6 +112,8 @@ impl MasterDirectoryBlock {
 
         Ok(Self {
             creation_date,
+            modification_date,
+            backup_date,
             file_count,
             alloc_block_size,
             alloc_block_start,
@@ -204,6 +218,10 @@ mod tests {
         img[off + 1] = 0x44;
         // Creation date (bytes 2–5)
         img[off + 2..off + 6].copy_from_slice(&0x8000_0000u32.to_be_bytes());
+        // Last-modification date (bytes 6–9)
+        img[off + 6..off + 10].copy_from_slice(&0x9000_0000u32.to_be_bytes());
+        // Backup date (bytes 64–67; after the drVN name field at 36..64)
+        img[off + 64..off + 68].copy_from_slice(&0xA000_0000u32.to_be_bytes());
         // file_count (bytes 10–11)
         img[off + 10..off + 12].copy_from_slice(&5u16.to_be_bytes());
         // alloc_block_size (bytes 20–23)
@@ -238,6 +256,8 @@ mod tests {
         assert_eq!(mdb.catalog_file_size, 10 * 4096);
         assert_eq!(mdb.file_count, 5);
         assert_eq!(mdb.creation_date, 0x8000_0000);
+        assert_eq!(mdb.modification_date, 0x9000_0000);
+        assert_eq!(mdb.backup_date, 0xA000_0000);
     }
 
     #[test]

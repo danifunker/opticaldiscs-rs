@@ -11,6 +11,7 @@ pub mod filesystem;
 
 // Phase 7
 pub mod iso9660;
+pub mod rockridge;
 
 // Phase 8
 pub mod hfs;

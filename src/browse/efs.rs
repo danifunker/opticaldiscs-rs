@@ -11,7 +11,7 @@
 //! `extents[0].offset` holds `direxts`, the number of inline slots actually
 //! used. See Linux `fs/efs/inode.c::efs_map_block`.
 
-use super::entry::{EntryType, FileEntry};
+use super::entry::{EntryType, FileEntry, FileTimestamps, PosixMetadata};
 use super::filesystem::{Filesystem, FilesystemError};
 use crate::efs::{
     inode_byte_offset, EfsExtent, EfsInode, EfsSuperblock, EFS_BLOCKSIZE, EFS_DIRBLK_HEADERSIZE,
@@ -319,6 +319,16 @@ impl Filesystem for EfsFilesystem {
                                 )
                             };
                             e.symlink_target = symlink_target;
+                            e.timestamps = Some(FileTimestamps::Unix {
+                                atime: child.atime as i64,
+                                mtime: child.mtime as i64,
+                                ctime: child.ctime as i64,
+                            });
+                            e.posix = Some(PosixMetadata {
+                                mode: child.mode as u32,
+                                uid: child.uid as u32,
+                                gid: child.gid as u32,
+                            });
                             entries.push(e);
                         }
                         Err(_) => {

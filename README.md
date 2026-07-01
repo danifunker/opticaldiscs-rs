@@ -48,6 +48,9 @@ for the full list of supported targets, glibc floors, and escape hatches.
 | Disc format + filesystem auto-detection | ✓ |
 | ISO 9660 filesystem browser | ✓ |
 | ISO 9660 PVD date/time metadata (creation/modification/expiration/effective) | ✓ (since 0.4.4) |
+| Joliet (Unicode long names) | ✓ (since 0.6.0) |
+| Rock Ridge / SUSP (POSIX metadata, long names, symlinks, timestamps) | ✓ (since 0.6.0) |
+| Per-file timestamps + POSIX ownership on `FileEntry` (all filesystems) | ✓ (since 0.6.0) |
 | HFS / HFS+ filesystem browser | ✓ |
 | SGI Volume Header + EFS filesystem browser (IRIX CDs) | ✓ (since 0.3.0) |
 | TOC + MusicBrainz/FreeDB DiscID | ✓ (`toc` feature) |

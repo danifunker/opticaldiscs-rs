@@ -1,5 +1,71 @@
 //! File and directory entry types for disc filesystem browsing.
 
+use crate::iso9660::Iso9660DateTime;
+
+/// Seconds between the classic Mac epoch (1904-01-01) and the Unix epoch
+/// (1970-01-01). Add/subtract to convert the raw HFS/HFS+ timestamps carried by
+/// [`FileTimestamps::Hfs`] / [`FileTimestamps::HfsPlus`] to/from Unix time.
+pub const MAC_EPOCH_UNIX_OFFSET: i64 = 2_082_844_800;
+
+/// Raw, untranslated per-file timestamps, tagged by the filesystem they came
+/// from. Each variant stores exactly the fields that filesystem records, in its
+/// native on-disk encoding — no epoch normalization is performed, so consumers
+/// can re-emit them faithfully or convert as they see fit.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FileTimestamps {
+    /// Classic HFS. Seconds since the Mac epoch (1904-01-01), **local time**
+    /// (HFS stores wall-clock time with no zone).
+    Hfs {
+        created: u32,
+        modified: u32,
+        backup: u32,
+    },
+    /// HFS+. Seconds since the Mac epoch (1904-01-01), **GMT**.
+    HfsPlus {
+        created: u32,
+        content_modified: u32,
+        attribute_modified: u32,
+        accessed: u32,
+        backup: u32,
+    },
+    /// ISO 9660. `recorded` is the directory record's recording time (always
+    /// present); the optional fields are filled from Rock Ridge `TF` entries
+    /// when the disc carries them.
+    Iso9660 {
+        recorded: Iso9660DateTime,
+        created: Option<Iso9660DateTime>,
+        modified: Option<Iso9660DateTime>,
+        accessed: Option<Iso9660DateTime>,
+    },
+    /// Unix-epoch seconds (EFS inode times; also Rock Ridge where applicable).
+    Unix { atime: i64, mtime: i64, ctime: i64 },
+}
+
+/// POSIX ownership and permission bits, surfaced where the filesystem records
+/// them: HFS+ `BSDInfo`, EFS inodes, and ISO 9660 Rock Ridge `PX` entries.
+/// Values are raw on-disk bits.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PosixMetadata {
+    /// Full mode word: file-type bits plus permission bits (e.g. `0o100644`).
+    pub mode: u32,
+    /// Owner user ID.
+    pub uid: u32,
+    /// Owner group ID.
+    pub gid: u32,
+}
+
+impl PosixMetadata {
+    /// Permission bits only (`mode & 0o7777`).
+    pub fn permission_bits(&self) -> u32 {
+        self.mode & 0o7777
+    }
+
+    /// True if the mode's type field marks a symbolic link (`S_IFLNK`).
+    pub fn is_symlink(&self) -> bool {
+        self.mode & 0o170000 == 0o120000
+    }
+}
+
 /// A single file or directory entry within a disc filesystem.
 #[derive(Debug, Clone)]
 pub struct FileEntry {
@@ -38,6 +104,12 @@ pub struct FileEntry {
     /// If this entry is an alias or symlink, the resolved target string for
     /// display. `None` for regular files.
     pub symlink_target: Option<String>,
+    /// Raw on-disk timestamps for this entry, tagged by filesystem. `None` if
+    /// the filesystem records none (or they were not read).
+    pub timestamps: Option<FileTimestamps>,
+    /// POSIX ownership/permission bits, where the filesystem records them
+    /// (HFS+, EFS, ISO 9660 Rock Ridge). `None` otherwise.
+    pub posix: Option<PosixMetadata>,
 }
 
 /// Whether a `FileEntry` represents a file or a directory.
@@ -78,6 +150,8 @@ impl FileEntry {
             creator_code: None,
             finder_flags: None,
             symlink_target: None,
+            timestamps: None,
+            posix: None,
         }
     }
 
@@ -107,6 +181,8 @@ impl FileEntry {
             creator_code: Some(creator_code),
             finder_flags: Some(finder_flags),
             symlink_target: None,
+            timestamps: None,
+            posix: None,
         }
     }
 
@@ -123,6 +199,8 @@ impl FileEntry {
             creator_code: None,
             finder_flags: None,
             symlink_target: None,
+            timestamps: None,
+            posix: None,
         }
     }
 
@@ -139,6 +217,8 @@ impl FileEntry {
             creator_code: None,
             finder_flags: None,
             symlink_target: None,
+            timestamps: None,
+            posix: None,
         }
     }
 

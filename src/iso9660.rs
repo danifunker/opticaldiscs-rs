@@ -115,6 +115,74 @@ fn parse_digits(bytes: &[u8]) -> Option<u32> {
     Some(value)
 }
 
+/// A parsed ISO 9660 directory-record recording date/time (ECMA-119 §9.1.5):
+/// the 7-byte *binary* form recorded per file and directory. This is distinct
+/// from the 17-byte ASCII [`PvdDateTime`] used in the volume descriptor.
+///
+/// Values are stored raw and untranslated; use [`Self::to_iso8601`] for display.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Iso9660DateTime {
+    /// Number of years since 1900 (e.g. `97` = 1997), stored raw.
+    pub years_since_1900: u8,
+    /// Month, 1–12.
+    pub month: u8,
+    /// Day of month, 1–31.
+    pub day: u8,
+    /// Hour, 0–23.
+    pub hour: u8,
+    /// Minute, 0–59.
+    pub minute: u8,
+    /// Second, 0–59.
+    pub second: u8,
+    /// Offset from GMT in 15-minute intervals (range -48..=52).
+    pub gmt_offset_quarter_hours: i8,
+}
+
+impl Iso9660DateTime {
+    /// Parse a 7-byte recording date/time field.
+    ///
+    /// Returns `None` if the slice is shorter than 7 bytes or the field is all
+    /// zero (the "not specified" encoding).
+    pub fn parse(bytes: &[u8]) -> Option<Self> {
+        if bytes.len() < 7 || bytes[..7].iter().all(|&b| b == 0) {
+            return None;
+        }
+        Some(Self {
+            years_since_1900: bytes[0],
+            month: bytes[1],
+            day: bytes[2],
+            hour: bytes[3],
+            minute: bytes[4],
+            second: bytes[5],
+            gmt_offset_quarter_hours: bytes[6] as i8,
+        })
+    }
+
+    /// Full four-digit year (e.g. 1997).
+    pub fn year(&self) -> u16 {
+        1900 + self.years_since_1900 as u16
+    }
+
+    /// Render as ISO-8601, e.g. `1997-03-18T16:45:47+00:00`.
+    pub fn to_iso8601(&self) -> String {
+        let total_minutes = self.gmt_offset_quarter_hours as i32 * 15;
+        let sign = if total_minutes < 0 { '-' } else { '+' };
+        let abs = total_minutes.abs();
+        format!(
+            "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}{}{:02}:{:02}",
+            self.year(),
+            self.month,
+            self.day,
+            self.hour,
+            self.minute,
+            self.second,
+            sign,
+            abs / 60,
+            abs % 60,
+        )
+    }
+}
+
 /// Information extracted from an ISO 9660 Primary Volume Descriptor.
 #[derive(Debug, Clone)]
 pub struct PrimaryVolumeDescriptor {
@@ -232,6 +300,78 @@ impl PrimaryVolumeDescriptor {
             .trim_end_matches([' ', '\0'])
             .to_string()
     }
+}
+
+/// Volume-descriptor type code for a Supplementary Volume Descriptor (ECMA-119
+/// §8.5). Joliet stores its Unicode directory tree in one of these.
+const SVD_TYPE: u8 = 0x02;
+
+/// Decode a big-endian UTF-16 (UCS-2) byte slice — the encoding Joliet uses for
+/// volume and file identifiers. A trailing odd byte is ignored; invalid
+/// sequences become U+FFFD.
+pub(crate) fn decode_utf16be(bytes: &[u8]) -> String {
+    let units: Vec<u16> = bytes
+        .chunks_exact(2)
+        .map(|c| u16::from_be_bytes([c[0], c[1]]))
+        .collect();
+    String::from_utf16_lossy(&units)
+}
+
+/// A Joliet Supplementary Volume Descriptor: just enough to browse the Joliet
+/// directory tree (which carries UCS-2 / UTF-16BE names).
+#[derive(Debug, Clone)]
+pub struct JolietVolumeDescriptor {
+    /// Volume identifier (label), decoded from UTF-16BE.
+    pub volume_id: String,
+    /// Root directory extent LBA of the Joliet tree.
+    pub root_directory_lba: u32,
+    /// Root directory extent size in bytes.
+    pub root_directory_size: u32,
+}
+
+impl JolietVolumeDescriptor {
+    /// Scan the volume-descriptor set (starting at sector 16) for a Joliet SVD:
+    /// a Supplementary Volume Descriptor whose escape sequences (bytes 88..120)
+    /// select a UCS-2 level (`%/@`, `%/C`, or `%/E`).
+    ///
+    /// Returns `Ok(None)` if the disc has no Joliet tree.
+    pub fn find(reader: &mut dyn SectorReader) -> Result<Option<Self>> {
+        // Bound the scan so damaged media can't spin forever.
+        for i in 0..32u64 {
+            let sector = match reader.read_sector(PVD_SECTOR + i) {
+                Ok(s) => s,
+                Err(_) => break,
+            };
+            if sector.len() < 190 || &sector[1..6] != ISO9660_ID {
+                break;
+            }
+            let vd_type = sector[0];
+            if vd_type == VD_SET_TERMINATOR_TYPE {
+                break;
+            }
+            if vd_type == SVD_TYPE && is_joliet_escape(&sector[88..120]) {
+                let volume_id = decode_utf16be(&sector[40..72])
+                    .trim_end_matches([' ', '\0'])
+                    .to_string();
+                let rdr = &sector[156..190];
+                let root_directory_lba = u32::from_le_bytes(rdr[2..6].try_into().unwrap());
+                let root_directory_size = u32::from_le_bytes(rdr[10..14].try_into().unwrap());
+                return Ok(Some(Self {
+                    volume_id,
+                    root_directory_lba,
+                    root_directory_size,
+                }));
+            }
+        }
+        Ok(None)
+    }
+}
+
+/// True if a descriptor's escape-sequence field selects a Joliet UCS-2 level.
+fn is_joliet_escape(escape: &[u8]) -> bool {
+    escape
+        .windows(3)
+        .any(|w| w == b"%/@" || w == b"%/C" || w == b"%/E")
 }
 
 // ── Helpers for tests and detect.rs ──────────────────────────────────────────
@@ -407,6 +547,83 @@ mod tests {
         let mut reader = CursorSectorReader(Cursor::new(img));
         let pvd = PrimaryVolumeDescriptor::read_from(&mut reader).unwrap();
         assert_eq!(pvd.volume_id, "READER_TEST");
+    }
+
+    #[test]
+    fn iso9660_datetime_parses_binary_form() {
+        // years-since-1900=97, 1997-03-18 16:45:47, GMT+0.
+        let dt = Iso9660DateTime::parse(&[97, 3, 18, 16, 45, 47, 0]).unwrap();
+        assert_eq!(dt.year(), 1997);
+        assert_eq!(dt.month, 3);
+        assert_eq!(dt.day, 18);
+        assert_eq!(dt.hour, 16);
+        assert_eq!(dt.second, 47);
+        assert_eq!(dt.to_iso8601(), "1997-03-18T16:45:47+00:00");
+    }
+
+    #[test]
+    fn iso9660_datetime_not_specified_and_short() {
+        assert_eq!(Iso9660DateTime::parse(&[0, 0, 0, 0, 0, 0, 0]), None);
+        assert_eq!(Iso9660DateTime::parse(&[97, 3, 18]), None);
+    }
+
+    #[test]
+    fn iso9660_datetime_negative_gmt_offset() {
+        // GMT offset -4h = -16 quarter-hours.
+        let dt = Iso9660DateTime::parse(&[97, 3, 18, 12, 0, 0, (-16i8) as u8]).unwrap();
+        assert_eq!(dt.to_iso8601(), "1997-03-18T12:00:00-04:00");
+    }
+
+    #[test]
+    fn decode_utf16be_basic() {
+        let bytes: Vec<u8> = "Héllo".encode_utf16().flat_map(u16::to_be_bytes).collect();
+        assert_eq!(decode_utf16be(&bytes), "Héllo");
+    }
+
+    /// Build a 2048-byte Joliet SVD sector (root at `root_lba`, label `label`).
+    fn build_joliet_svd(label: &str, root_lba: u32) -> Vec<u8> {
+        let mut svd = vec![0u8; 2048];
+        svd[0] = SVD_TYPE;
+        svd[1..6].copy_from_slice(ISO9660_ID);
+        svd[6] = 1;
+        svd[88..91].copy_from_slice(b"%/E"); // Joliet level 3 escape
+        let vid: Vec<u8> = label.encode_utf16().flat_map(u16::to_be_bytes).collect();
+        svd[40..40 + vid.len()].copy_from_slice(&vid);
+        let rdr = &mut svd[156..190];
+        rdr[0] = 34;
+        rdr[2..6].copy_from_slice(&root_lba.to_le_bytes());
+        rdr[6..10].copy_from_slice(&root_lba.to_be_bytes());
+        rdr[10..14].copy_from_slice(&2048u32.to_le_bytes());
+        rdr[14..18].copy_from_slice(&2048u32.to_be_bytes());
+        svd
+    }
+
+    #[test]
+    fn joliet_find_returns_svd() {
+        // Sector 16 = PVD, 17 = Joliet SVD, 18 = terminator.
+        let mut img = vec![0u8; 19 * 2048];
+        img[16 * 2048..17 * 2048].copy_from_slice(&build_test_pvd_sector("PRIMARY", 20, 2048));
+        img[17 * 2048..18 * 2048].copy_from_slice(&build_joliet_svd("JOLIET", 30));
+        img[18 * 2048] = VD_SET_TERMINATOR_TYPE;
+        img[18 * 2048 + 1..18 * 2048 + 6].copy_from_slice(ISO9660_ID);
+
+        let mut reader = CursorSectorReader(std::io::Cursor::new(img));
+        let svd = JolietVolumeDescriptor::find(&mut reader).unwrap().unwrap();
+        assert_eq!(svd.volume_id, "JOLIET");
+        assert_eq!(svd.root_directory_lba, 30);
+        assert_eq!(svd.root_directory_size, 2048);
+    }
+
+    #[test]
+    fn joliet_find_none_for_plain_iso() {
+        // Sector 16 = PVD, 17 = terminator, no SVD.
+        let mut img = vec![0u8; 18 * 2048];
+        img[16 * 2048..17 * 2048].copy_from_slice(&build_test_pvd_sector("PLAIN", 20, 2048));
+        img[17 * 2048] = VD_SET_TERMINATOR_TYPE;
+        img[17 * 2048 + 1..17 * 2048 + 6].copy_from_slice(ISO9660_ID);
+
+        let mut reader = CursorSectorReader(std::io::Cursor::new(img));
+        assert!(JolietVolumeDescriptor::find(&mut reader).unwrap().is_none());
     }
 
     /// Minimal SectorReader wrapper around a Cursor for testing.

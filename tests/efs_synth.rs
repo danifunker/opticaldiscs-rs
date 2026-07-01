@@ -113,3 +113,32 @@ fn resource_fork_returns_none_for_efs() {
     let data = entries.iter().find(|e| e.name == "data").unwrap();
     assert!(fs.read_resource_fork(data).unwrap().is_none());
 }
+
+#[test]
+fn efs_surfaces_timestamps_and_posix() {
+    use opticaldiscs::{FileTimestamps, PosixMetadata};
+
+    let f = write_fixture_to_tempfile();
+    let info = DiscImageInfo::open(f.path()).expect("open synth disc");
+    let mut fs = browse::open_disc_filesystem(&info).expect("open filesystem");
+    let root = fs.root().unwrap();
+    let entries = fs.list_directory(&root).unwrap();
+    let data = entries.iter().find(|e| e.name == "data").unwrap();
+
+    assert_eq!(
+        data.timestamps,
+        Some(FileTimestamps::Unix {
+            atime: 0x1000_0000,
+            mtime: 0x2000_0000,
+            ctime: 0x3000_0000,
+        })
+    );
+    assert_eq!(
+        data.posix,
+        Some(PosixMetadata {
+            mode: 0o100_644,
+            uid: 501,
+            gid: 20,
+        })
+    );
+}

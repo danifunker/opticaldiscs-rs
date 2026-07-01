@@ -36,6 +36,15 @@ pub struct HfsPlusVolumeHeader {
     pub signature: u16,
     /// Format version: 4 for HFS+, 5 for HFSX.
     pub version: u16,
+    /// Volume creation date (`createDate`; secs since 1904, stored in **local**
+    /// time per TN1150).
+    pub create_date: u32,
+    /// Volume last-modification date (`modifyDate`; secs since 1904, GMT).
+    pub modify_date: u32,
+    /// Volume last-backup date (`backupDate`; secs since 1904, GMT).
+    pub backup_date: u32,
+    /// Volume last-consistency-check date (`checkedDate`; secs since 1904, GMT).
+    pub checked_date: u32,
     /// Size of each allocation block in bytes.
     pub block_size: u32,
     /// Total number of allocation blocks on the volume.
@@ -74,6 +83,12 @@ impl HfsPlusVolumeHeader {
 
         // Bytes 2–3: version (u16 BE)
         let version = u16::from_be_bytes([hdr[2], hdr[3]]);
+        // Bytes 16–31: createDate/modifyDate/backupDate/checkedDate (u32 BE each,
+        // secs since 1904). These precede fileCount at +32.
+        let create_date = u32::from_be_bytes([hdr[16], hdr[17], hdr[18], hdr[19]]);
+        let modify_date = u32::from_be_bytes([hdr[20], hdr[21], hdr[22], hdr[23]]);
+        let backup_date = u32::from_be_bytes([hdr[24], hdr[25], hdr[26], hdr[27]]);
+        let checked_date = u32::from_be_bytes([hdr[28], hdr[29], hdr[30], hdr[31]]);
         // Bytes 32–35: fileCount (u32 BE)
         let file_count = u32::from_be_bytes([hdr[32], hdr[33], hdr[34], hdr[35]]);
         // Bytes 36–39: folderCount (u32 BE)
@@ -95,6 +110,10 @@ impl HfsPlusVolumeHeader {
         Ok(Self {
             signature,
             version,
+            create_date,
+            modify_date,
+            backup_date,
+            checked_date,
             block_size,
             total_blocks,
             free_blocks,
@@ -272,6 +291,10 @@ mod tests {
         img[off] = 0x48;
         img[off + 1] = 0x2B; // "H+"
         img[off + 2..off + 4].copy_from_slice(&4u16.to_be_bytes()); // version
+        img[off + 16..off + 20].copy_from_slice(&0x1000_0001u32.to_be_bytes()); // createDate
+        img[off + 20..off + 24].copy_from_slice(&0x1000_0002u32.to_be_bytes()); // modifyDate
+        img[off + 24..off + 28].copy_from_slice(&0x1000_0003u32.to_be_bytes()); // backupDate
+        img[off + 28..off + 32].copy_from_slice(&0x1000_0004u32.to_be_bytes()); // checkedDate
         img[off + 40..off + 44].copy_from_slice(&block_size.to_be_bytes());
         img[off + 44..off + 48].copy_from_slice(&1000u32.to_be_bytes()); // total_blocks
         img[off + 48..off + 52].copy_from_slice(&500u32.to_be_bytes()); // free_blocks
@@ -292,6 +315,10 @@ mod tests {
         assert_eq!(vh.free_blocks, 500);
         assert_eq!(vh.catalog_start_block, 10);
         assert_eq!(vh.catalog_block_count, 20);
+        assert_eq!(vh.create_date, 0x1000_0001);
+        assert_eq!(vh.modify_date, 0x1000_0002);
+        assert_eq!(vh.backup_date, 0x1000_0003);
+        assert_eq!(vh.checked_date, 0x1000_0004);
     }
 
     #[test]

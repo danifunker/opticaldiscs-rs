@@ -8,10 +8,16 @@
 //!
 //! See PLAN.md Phase 8.4 for implementation details.
 
-use super::entry::{EntryType, FileEntry};
+use super::entry::{EntryType, FileEntry, FileTimestamps};
 use super::filesystem::{Filesystem, FilesystemError};
 use crate::hfs::{mac_roman_to_string, MasterDirectoryBlock};
 use crate::sector_reader::SectorReader;
+
+/// Read a big-endian `u32` from `node` at byte offset `off`. Callers must have
+/// already bounds-checked that `off + 4 <= node.len()`.
+fn be32(node: &[u8], off: usize) -> u32 {
+    u32::from_be_bytes([node[off], node[off + 1], node[off + 2], node[off + 3]])
+}
 
 // ── HFS B-tree / catalog constants ───────────────────────────────────────────
 
@@ -517,17 +523,22 @@ fn process_leaf_node(
 
         match rec_type {
             HFS_FOLDER_RECORD => {
-                // Folder record: dir_id at data_off + 6 (u32 BE).
-                if data_off + 10 > node.len() {
+                // Folder record (offsets relative to data_off, HFS `CatDataDir`):
+                //   +6   : dir_id            (u32 BE)
+                //   +10  : creation date     (u32 BE, secs since 1904, local)
+                //   +14  : modification date (u32 BE)
+                //   +18  : backup date       (u32 BE)
+                if data_off + 22 > node.len() {
                     continue;
                 }
-                let dir_id = u32::from_be_bytes([
-                    node[data_off + 6],
-                    node[data_off + 7],
-                    node[data_off + 8],
-                    node[data_off + 9],
-                ]);
-                entries.push(FileEntry::new_directory(name, path, dir_id as u64));
+                let dir_id = be32(node, data_off + 6);
+                let mut entry = FileEntry::new_directory(name, path, dir_id as u64);
+                entry.timestamps = Some(FileTimestamps::Hfs {
+                    created: be32(node, data_off + 10),
+                    modified: be32(node, data_off + 14),
+                    backup: be32(node, data_off + 18),
+                });
+                entries.push(entry);
                 metas.push(None);
             }
             HFS_FILE_RECORD => {
@@ -538,6 +549,9 @@ fn process_leaf_node(
                 //   +20  : file_id                    (u32 BE)
                 //   +26  : data fork logical size     (u32 BE)
                 //   +36  : resource fork logical size (u32 BE)
+                //   +44  : creation date              (u32 BE, secs since 1904, local)
+                //   +48  : modification date          (u32 BE)
+                //   +52  : backup date                (u32 BE)
                 //   +86..+98: resource fork extents (3 × HfsExtent)
                 if data_off + 98 > node.len() {
                     continue;
@@ -573,7 +587,7 @@ fn process_leaf_node(
                     node[data_off + 39],
                 ]);
                 let finder_flags = u16::from_be_bytes([node[data_off + 12], node[data_off + 13]]);
-                entries.push(FileEntry::new_hfs_file(
+                let mut entry = FileEntry::new_hfs_file(
                     name,
                     path,
                     data_logical_size as u64,
@@ -582,7 +596,13 @@ fn process_leaf_node(
                     type_code,
                     creator_code,
                     finder_flags,
-                ));
+                );
+                entry.timestamps = Some(FileTimestamps::Hfs {
+                    created: be32(node, data_off + 44),
+                    modified: be32(node, data_off + 48),
+                    backup: be32(node, data_off + 52),
+                });
+                entries.push(entry);
                 let mut rsrc_extents = Vec::with_capacity(3);
                 for j in 0..3 {
                     let base = data_off + 86 + j * 4;
@@ -764,6 +784,10 @@ mod tests {
         // Folder record: type=1 at data_off, dir_id at data_off+6
         node[data_off] = 1; // HFS_FOLDER_RECORD
         node[data_off + 6..data_off + 10].copy_from_slice(&42u32.to_be_bytes()); // dir_id = 42
+                                                                                 // creation/modification/backup dates at +10/+14/+18 (secs since 1904).
+        node[data_off + 10..data_off + 14].copy_from_slice(&0x1000_0000u32.to_be_bytes());
+        node[data_off + 14..data_off + 18].copy_from_slice(&0x2000_0000u32.to_be_bytes());
+        node[data_off + 18..data_off + 22].copy_from_slice(&0x3000_0000u32.to_be_bytes());
 
         let mut entries = Vec::new();
         let mut metas = Vec::new();
@@ -773,6 +797,14 @@ mod tests {
         assert_eq!(entries[0].path, "/A");
         assert!(entries[0].is_directory());
         assert_eq!(entries[0].location, 42);
+        assert_eq!(
+            entries[0].timestamps,
+            Some(crate::browse::entry::FileTimestamps::Hfs {
+                created: 0x1000_0000,
+                modified: 0x2000_0000,
+                backup: 0x3000_0000,
+            })
+        );
     }
 
     #[test]
@@ -799,6 +831,10 @@ mod tests {
         node[data_off + 26..data_off + 30].copy_from_slice(&1024u32.to_be_bytes());
         // resource-fork logical_size at data_off + 36
         node[data_off + 36..data_off + 40].copy_from_slice(&256u32.to_be_bytes());
+        // creation/modification/backup dates at +44/+48/+52 (secs since 1904).
+        node[data_off + 44..data_off + 48].copy_from_slice(&0x1111_1111u32.to_be_bytes());
+        node[data_off + 48..data_off + 52].copy_from_slice(&0x2222_2222u32.to_be_bytes());
+        node[data_off + 52..data_off + 56].copy_from_slice(&0x3333_3333u32.to_be_bytes());
 
         let mut entries = Vec::new();
         let mut metas = Vec::new();
@@ -811,6 +847,14 @@ mod tests {
         assert_eq!(entries[0].resource_fork_size, Some(256));
         assert_eq!(entries[0].type_code, Some(*b"TEXT"));
         assert_eq!(entries[0].creator_code, Some(*b"ttxt"));
+        assert_eq!(
+            entries[0].timestamps,
+            Some(crate::browse::entry::FileTimestamps::Hfs {
+                created: 0x1111_1111,
+                modified: 0x2222_2222,
+                backup: 0x3333_3333,
+            })
+        );
     }
 
     #[test]
