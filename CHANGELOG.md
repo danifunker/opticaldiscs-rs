@@ -3,6 +3,44 @@
 All notable changes to this crate are documented here. This project follows
 [Semantic Versioning](https://semver.org/).
 
+## 0.6.0 — Unreleased
+
+> **⚠️ Breaking change — action required.** `FileEntry` gained two new public
+> fields, `timestamps: Option<FileTimestamps>` and `posix: Option<PosixMetadata>`.
+> Code that constructs `FileEntry` with a struct literal, or that exhaustively
+> matches it, must account for them. (The `new_*` constructors are unchanged and
+> default both to `None`.)
+
+### Added
+
+- **Per-file timestamps on `FileEntry`** via the new `timestamps:
+  Option<FileTimestamps>` field. Dates are exposed **raw and untranslated**,
+  tagged by filesystem, so consumers can re-emit or convert them losslessly:
+  - `FileTimestamps::Hfs { created, modified, backup }` — secs since 1904 (local).
+  - `FileTimestamps::HfsPlus { created, content_modified, attribute_modified,
+    accessed, backup }` — secs since 1904 (GMT).
+  - `FileTimestamps::Iso9660 { recorded, created, modified, accessed }` — the
+    directory-record recording time plus optional Rock Ridge `TF` times.
+  - `FileTimestamps::Unix { atime, mtime, ctime }` — EFS inode times (secs since
+    1970).
+  - Helper `MAC_EPOCH_UNIX_OFFSET` and `Iso9660DateTime::to_iso8601()` for display.
+- **POSIX ownership/permissions on `FileEntry`** via `posix: Option<PosixMetadata>`
+  (`mode`, `uid`, `gid`), populated from HFS+ `BSDInfo`, EFS inodes, and ISO 9660
+  Rock Ridge `PX`. Helpers `permission_bits()` and `is_symlink()`.
+- **Volume-level dates completed.** `MasterDirectoryBlock` gained
+  `modification_date` and `backup_date`; `HfsPlusVolumeHeader` gained
+  `create_date`, `modify_date`, `backup_date`, and `checked_date` (all secs since
+  1904). Reachable via `DiscImageInfo::hfs_mdb` / `hfsplus_header`.
+- **Joliet support.** The ISO 9660 browser now scans the volume-descriptor set
+  for a Joliet Supplementary Volume Descriptor and, when present, browses the
+  Joliet tree with UTF-16BE (Unicode) names. New public `JolietVolumeDescriptor`.
+- **Rock Ridge / SUSP support.** POSIX metadata (`PX`), long/alternate names
+  (`NM`), symlink targets (`SL`), and timestamps (`TF`) are read from the System
+  Use area, following `CE` continuation areas. When a disc has both Rock Ridge
+  and Joliet, the Rock Ridge (primary) tree is preferred for metadata fidelity.
+- New public `Iso9660DateTime` (the 7-byte binary recording-date form) and
+  re-exports of `PrimaryVolumeDescriptor` / `PvdDateTime`.
+
 ## 0.5.0 — Unreleased
 
 > **⚠️ Breaking change — action required.** `FileEntry::type_code` and

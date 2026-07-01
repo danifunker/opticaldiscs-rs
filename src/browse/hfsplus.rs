@@ -8,10 +8,39 @@
 //!
 //! See PLAN.md Phase 8.5 for implementation details.
 
-use super::entry::{EntryType, FileEntry};
+use super::entry::{EntryType, FileEntry, FileTimestamps, PosixMetadata};
 use super::filesystem::{Filesystem, FilesystemError};
 use crate::hfsplus::{extract_volume_name_from_catalog, HfsPlusVolumeHeader};
 use crate::sector_reader::SectorReader;
+
+/// Read a big-endian `u32` from `node` at byte offset `off`. Callers must have
+/// already bounds-checked that `off + 4 <= node.len()`.
+fn be32(node: &[u8], off: usize) -> u32 {
+    u32::from_be_bytes([node[off], node[off + 1], node[off + 2], node[off + 3]])
+}
+
+/// Read the five HFS+ catalog dates (createDate, contentModDate,
+/// attributeModDate, accessDate, backupDate) that sit at `data_off + 12..32` in
+/// both file and folder records. Callers must have bounds-checked to `+32`.
+fn hfsplus_timestamps(node: &[u8], data_off: usize) -> FileTimestamps {
+    FileTimestamps::HfsPlus {
+        created: be32(node, data_off + 12),
+        content_modified: be32(node, data_off + 16),
+        attribute_modified: be32(node, data_off + 20),
+        accessed: be32(node, data_off + 24),
+        backup: be32(node, data_off + 28),
+    }
+}
+
+/// Read the HFS+ `BSDInfo` at `data_off + 32` (ownerID +32, groupID +36,
+/// fileMode +42). Callers must have bounds-checked to `+44`.
+fn hfsplus_posix(node: &[u8], data_off: usize) -> PosixMetadata {
+    PosixMetadata {
+        uid: be32(node, data_off + 32),
+        gid: be32(node, data_off + 36),
+        mode: u16::from_be_bytes([node[data_off + 42], node[data_off + 43]]) as u32,
+    }
+}
 
 // ── HFS+ catalog record types ─────────────────────────────────────────────────
 
@@ -499,22 +528,25 @@ fn process_leaf_node(
 
         match rec_type {
             HFSPLUS_FOLDER_RECORD => {
-                // Folder CNID at data_off + 8 (u32 BE).
-                if data_off + 12 > node.len() {
+                // Folder record (offsets relative to data_off):
+                //   +8    : CNID                       (u32 BE)
+                //   +12..+32 : create/contentMod/attrMod/access/backup dates
+                //   +32   : BSDInfo (ownerID/groupID/…/fileMode at +42)
+                if data_off + 44 > node.len() {
                     continue;
                 }
-                let cnid = u32::from_be_bytes([
-                    node[data_off + 8],
-                    node[data_off + 9],
-                    node[data_off + 10],
-                    node[data_off + 11],
-                ]);
-                entries.push(FileEntry::new_directory(name, path, cnid as u64));
+                let cnid = be32(node, data_off + 8);
+                let mut entry = FileEntry::new_directory(name, path, cnid as u64);
+                entry.timestamps = Some(hfsplus_timestamps(node, data_off));
+                entry.posix = Some(hfsplus_posix(node, data_off));
+                entries.push(entry);
                 metas.push(None);
             }
             HFSPLUS_FILE_RECORD => {
                 // File record offsets (relative to data_off):
                 //   +8    : CNID                   (u32 BE)
+                //   +12..+32 : create/contentMod/attrMod/access/backup dates
+                //   +32   : BSDInfo (ownerID/groupID/…/fileMode at +42)
                 //   +48   : fdType                 (4 bytes, FileInfo)
                 //   +52   : fdCreator              (4 bytes, FileInfo)
                 //   +56   : fdFlags                (u16 BE,  FileInfo)
@@ -563,7 +595,7 @@ fn process_leaf_node(
                     node[data_off + 175],
                 ]);
                 let finder_flags = u16::from_be_bytes([node[data_off + 56], node[data_off + 57]]);
-                entries.push(FileEntry::new_hfs_file(
+                let mut entry = FileEntry::new_hfs_file(
                     name,
                     path,
                     data_size,
@@ -572,7 +604,10 @@ fn process_leaf_node(
                     type_code,
                     creator_code,
                     finder_flags,
-                ));
+                );
+                entry.timestamps = Some(hfsplus_timestamps(node, data_off));
+                entry.posix = Some(hfsplus_posix(node, data_off));
+                entries.push(entry);
                 let data_fork = parse_fork(node, data_off + 88);
                 let resource_fork = parse_fork(node, data_off + 168);
                 metas.push(Some(HfsPlusFileMeta {
@@ -798,7 +833,7 @@ mod tests {
 
     #[test]
     fn process_leaf_node_file_record_populates_hfs_metadata() {
-        let (node, _) = build_file_record_node(&FileRecordSpec {
+        let (mut node, data_off) = build_file_record_node(&FileRecordSpec {
             node_size: 2048,
             parent_id: 2,
             name: "note",
@@ -808,6 +843,16 @@ mod tests {
             type_code: *b"TEXT",
             creator_code: *b"ttxt",
         });
+        // Dates at +12..+32; BSDInfo (ownerID +32, groupID +36, fileMode +42).
+        node[data_off + 12..data_off + 16].copy_from_slice(&0x0A00_0000u32.to_be_bytes());
+        node[data_off + 16..data_off + 20].copy_from_slice(&0x0B00_0000u32.to_be_bytes());
+        node[data_off + 20..data_off + 24].copy_from_slice(&0x0C00_0000u32.to_be_bytes());
+        node[data_off + 24..data_off + 28].copy_from_slice(&0x0D00_0000u32.to_be_bytes());
+        node[data_off + 28..data_off + 32].copy_from_slice(&0x0E00_0000u32.to_be_bytes());
+        node[data_off + 32..data_off + 36].copy_from_slice(&501u32.to_be_bytes());
+        node[data_off + 36..data_off + 40].copy_from_slice(&20u32.to_be_bytes());
+        node[data_off + 42..data_off + 44].copy_from_slice(&0o100_644u16.to_be_bytes());
+
         let mut entries = Vec::new();
         let mut metas = Vec::new();
         process_leaf_node(&node, 2048, 1, 2, "/", &mut entries, &mut metas);
@@ -820,6 +865,20 @@ mod tests {
         assert_eq!(e.resource_fork_size, Some(512));
         assert_eq!(e.type_code, Some(*b"TEXT"));
         assert_eq!(e.creator_code, Some(*b"ttxt"));
+        assert_eq!(
+            e.timestamps,
+            Some(crate::browse::entry::FileTimestamps::HfsPlus {
+                created: 0x0A00_0000,
+                content_modified: 0x0B00_0000,
+                attribute_modified: 0x0C00_0000,
+                accessed: 0x0D00_0000,
+                backup: 0x0E00_0000,
+            })
+        );
+        let px = e.posix.expect("posix present");
+        assert_eq!(px.uid, 501);
+        assert_eq!(px.gid, 20);
+        assert_eq!(px.mode, 0o100_644);
     }
 
     #[test]
@@ -874,6 +933,14 @@ mod tests {
         node[data_off..data_off + 2].copy_from_slice(&1i16.to_be_bytes());
         // Folder CNID at data_off + 8
         node[data_off + 8..data_off + 12].copy_from_slice(&55u32.to_be_bytes());
+        // Dates at +12..+32; BSDInfo groupID +36, fileMode +42.
+        node[data_off + 12..data_off + 16].copy_from_slice(&0x0100_0000u32.to_be_bytes());
+        node[data_off + 16..data_off + 20].copy_from_slice(&0x0200_0000u32.to_be_bytes());
+        node[data_off + 20..data_off + 24].copy_from_slice(&0x0300_0000u32.to_be_bytes());
+        node[data_off + 24..data_off + 28].copy_from_slice(&0x0400_0000u32.to_be_bytes());
+        node[data_off + 28..data_off + 32].copy_from_slice(&0x0500_0000u32.to_be_bytes());
+        node[data_off + 36..data_off + 40].copy_from_slice(&80u32.to_be_bytes());
+        node[data_off + 42..data_off + 44].copy_from_slice(&0o040_755u16.to_be_bytes());
 
         let mut entries = Vec::new();
         let mut metas = Vec::new();
@@ -882,5 +949,18 @@ mod tests {
         assert_eq!(entries[0].name, "A");
         assert!(entries[0].is_directory());
         assert_eq!(entries[0].location, 55);
+        assert_eq!(
+            entries[0].timestamps,
+            Some(crate::browse::entry::FileTimestamps::HfsPlus {
+                created: 0x0100_0000,
+                content_modified: 0x0200_0000,
+                attribute_modified: 0x0300_0000,
+                accessed: 0x0400_0000,
+                backup: 0x0500_0000,
+            })
+        );
+        let px = entries[0].posix.expect("posix present");
+        assert_eq!(px.gid, 80);
+        assert_eq!(px.mode, 0o040_755);
     }
 }

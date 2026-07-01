@@ -106,9 +106,15 @@ pub fn build_synth_irix_disc() -> Vec<u8> {
     img[off + 36..off + 40].copy_from_slice(&(1u32 << 24).to_be_bytes());
 
     // Inode 4: regular file, size 512 → block 21.
+    // Also carries ownership + timestamps so metadata plumbing can be asserted.
     let off = ino_off(4);
     img[off..off + 2].copy_from_slice(&0o100644u16.to_be_bytes());
+    img[off + 4..off + 6].copy_from_slice(&501u16.to_be_bytes()); // uid
+    img[off + 6..off + 8].copy_from_slice(&20u16.to_be_bytes()); // gid
     img[off + 8..off + 12].copy_from_slice(&512u32.to_be_bytes());
+    img[off + 12..off + 16].copy_from_slice(&0x1000_0000u32.to_be_bytes()); // atime
+    img[off + 16..off + 20].copy_from_slice(&0x2000_0000u32.to_be_bytes()); // mtime
+    img[off + 20..off + 24].copy_from_slice(&0x3000_0000u32.to_be_bytes()); // ctime
     img[off + 28..off + 30].copy_from_slice(&1u16.to_be_bytes());
     img[off + 32..off + 36].copy_from_slice(&21u32.to_be_bytes());
     img[off + 36..off + 40].copy_from_slice(&(1u32 << 24).to_be_bytes());

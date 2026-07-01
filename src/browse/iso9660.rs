@@ -7,9 +7,9 @@
 //! Create one via [`crate::browse::open_disc_filesystem`] or directly with
 //! [`Iso9660Filesystem::new`] when you already have a `Box<dyn SectorReader>`.
 
-use super::entry::{EntryType, FileEntry};
+use super::entry::{EntryType, FileEntry, FileTimestamps};
 use super::filesystem::{Filesystem, FilesystemError};
-use crate::iso9660::PrimaryVolumeDescriptor;
+use crate::iso9660::{Iso9660DateTime, PrimaryVolumeDescriptor};
 use crate::sector_reader::{SectorReader, SECTOR_SIZE};
 
 // ── Iso9660Filesystem ─────────────────────────────────────────────────────────
@@ -24,13 +24,20 @@ pub struct Iso9660Filesystem {
     root_location: u32,
     root_size: u32,
     volume_id: String,
+    /// When set, the browsed tree is a Joliet tree, so directory-record
+    /// identifiers are decoded as UTF-16BE.
+    joliet: bool,
 }
 
 impl Iso9660Filesystem {
     /// Create an `Iso9660Filesystem` by reading the PVD from `reader`.
     ///
     /// Reads sector 16, validates the ISO 9660 header, and extracts the root
-    /// directory location and size.
+    /// directory location and size. Then selects which directory tree to browse:
+    /// the primary tree is preferred when it carries **Rock Ridge** (so POSIX
+    /// metadata, long names, and symlinks are available); otherwise a **Joliet**
+    /// tree is used when present (Unicode names). A plain ISO 9660 disc falls
+    /// back to the primary tree with 8.3-style names.
     ///
     /// # Errors
     ///
@@ -39,11 +46,42 @@ impl Iso9660Filesystem {
         let pvd = PrimaryVolumeDescriptor::read_from(&mut *reader)
             .map_err(|e| FilesystemError::Parse(e.to_string()))?;
 
+        // Prefer Rock Ridge on the primary tree; only fall back to Joliet when
+        // the primary tree has no Rock Ridge extensions.
+        let rock_ridge = detect_rock_ridge_root(
+            reader.as_mut(),
+            pvd.root_directory_lba,
+            pvd.root_directory_size,
+        );
+        let joliet_svd = if rock_ridge {
+            None
+        } else {
+            crate::iso9660::JolietVolumeDescriptor::find(reader.as_mut())
+                .ok()
+                .flatten()
+        };
+
+        let (root_location, root_size, volume_id, joliet) = match joliet_svd {
+            Some(j) => (
+                j.root_directory_lba,
+                j.root_directory_size,
+                j.volume_id,
+                true,
+            ),
+            None => (
+                pvd.root_directory_lba,
+                pvd.root_directory_size,
+                pvd.volume_id,
+                false,
+            ),
+        };
+
         Ok(Self {
             reader,
-            root_location: pvd.root_directory_lba,
-            root_size: pvd.root_directory_size,
-            volume_id: pvd.volume_id,
+            root_location,
+            root_size,
+            volume_id,
+            joliet,
         })
     }
 
@@ -68,7 +106,7 @@ impl Iso9660Filesystem {
     /// Sets `entry.size` to `data_length` for directories so that
     /// [`Self::list_directory`] can read them without re-parsing the extent
     /// size from the disc.
-    fn parse_directory(&self, data: &[u8], parent_path: &str) -> Vec<FileEntry> {
+    fn parse_directory(&mut self, data: &[u8], parent_path: &str) -> Vec<FileEntry> {
         let mut entries = Vec::new();
         let mut offset = 0usize;
 
@@ -92,7 +130,13 @@ impl Iso9660Filesystem {
 
             if let Some(rec) = DirectoryRecord::parse(&data[offset..offset + record_length]) {
                 if !rec.is_self() && !rec.is_parent() {
-                    let name = rec.clean_name();
+                    let mut name = rec.clean_name(self.joliet);
+                    // Rock Ridge overrides (name, POSIX, timestamps, symlink) are
+                    // applied from the record's System Use area, if present.
+                    let rr = super::rockridge::parse(&rec.system_use, self.reader.as_mut());
+                    if let Some(alt) = &rr.name {
+                        name = alt.clone();
+                    }
                     let path = if parent_path == "/" {
                         format!("/{}", name)
                     } else {
@@ -114,6 +158,21 @@ impl Iso9660Filesystem {
                     // list_directory knows how many bytes to read.
                     if entry.is_directory() {
                         entry.size = rec.data_length as u64;
+                    }
+
+                    if let Some(recorded) = rec.recorded {
+                        entry.timestamps = Some(FileTimestamps::Iso9660 {
+                            recorded,
+                            created: rr.created,
+                            modified: rr.modified,
+                            accessed: rr.accessed,
+                        });
+                    }
+                    if let Some(posix) = rr.posix {
+                        entry.posix = Some(posix);
+                    }
+                    if let Some(target) = rr.symlink_target {
+                        entry.symlink_target = Some(target);
                     }
 
                     entries.push(entry);
@@ -233,8 +292,16 @@ struct DirectoryRecord {
     data_length: u32,
     /// ISO 9660 file flags byte (bit 1 = directory).
     file_flags: u8,
-    /// Raw file identifier (may contain version suffix such as `;1`).
-    file_identifier: String,
+    /// Raw file identifier bytes (may contain version suffix such as `;1`, and,
+    /// for Joliet, UTF-16BE code units).
+    file_identifier: Vec<u8>,
+    /// Recording date/time (ECMA-119 §9.1.5, 7-byte binary form). `None` if the
+    /// field is unset.
+    recorded: Option<Iso9660DateTime>,
+    /// Rock Ridge / SUSP "System Use" bytes that follow the identifier (plus its
+    /// padding byte), up to the end of the record. Empty when the disc carries
+    /// no System Use area.
+    system_use: Vec<u8>,
 }
 
 impl DirectoryRecord {
@@ -249,6 +316,7 @@ impl DirectoryRecord {
 
         let extent_location = u32::from_le_bytes(data[2..6].try_into().ok()?);
         let data_length = u32::from_le_bytes(data[10..14].try_into().ok()?);
+        let recorded = Iso9660DateTime::parse(&data[18..25]);
         let file_flags = data[25];
         let id_len = data[32] as usize;
 
@@ -256,13 +324,22 @@ impl DirectoryRecord {
             return None;
         }
 
-        let file_identifier = String::from_utf8_lossy(&data[33..33 + id_len]).to_string();
+        let file_identifier = data[33..33 + id_len].to_vec();
+
+        // The System Use area follows the identifier, after a padding byte that
+        // is present only when `id_len` is even (so the identifier + optional pad
+        // ends on an even boundary). Everything from there to `record_length`
+        // (the whole slice) is available for Rock Ridge / SUSP.
+        let su_start = 33 + id_len + (1 - id_len % 2);
+        let system_use = data.get(su_start..).map(|s| s.to_vec()).unwrap_or_default();
 
         Some(Self {
             extent_location,
             data_length,
             file_flags,
             file_identifier,
+            recorded,
+            system_use,
         })
     }
 
@@ -272,17 +349,18 @@ impl DirectoryRecord {
 
     /// True for the `.` (current directory) entry (identifier `\x00`).
     fn is_self(&self) -> bool {
-        self.file_identifier == "\0" || self.file_identifier.is_empty()
+        self.file_identifier.is_empty() || self.file_identifier == [0x00]
     }
 
     /// True for the `..` (parent directory) entry (identifier `\x01`).
     fn is_parent(&self) -> bool {
-        self.file_identifier == "\x01"
+        self.file_identifier == [0x01]
     }
 
-    /// Return the display name, stripping the `;1` version suffix from files
-    /// and trailing dots from directory names.
-    fn clean_name(&self) -> String {
+    /// Return the display name. When `joliet` is set the identifier bytes are
+    /// decoded as UTF-16BE (UCS-2); otherwise as (lossy) UTF-8. The `;1` version
+    /// suffix is stripped from files and trailing dots from directory names.
+    fn clean_name(&self, joliet: bool) -> String {
         if self.is_self() {
             return ".".to_string();
         }
@@ -290,20 +368,49 @@ impl DirectoryRecord {
             return "..".to_string();
         }
 
+        let decoded = if joliet {
+            crate::iso9660::decode_utf16be(&self.file_identifier)
+        } else {
+            String::from_utf8_lossy(&self.file_identifier).into_owned()
+        };
+
         // Strip version suffix (";1", ";2", …).
-        let name = match self.file_identifier.rfind(';') {
-            Some(idx) => &self.file_identifier[..idx],
-            None => &self.file_identifier,
+        let name = match decoded.rfind(';') {
+            Some(idx) => &decoded[..idx],
+            None => &decoded[..],
         };
 
         // Strip trailing dot — ISO 9660 directory identifiers end with `.`.
-        let name = if self.is_directory() {
-            name.trim_end_matches('.')
+        if self.is_directory() {
+            name.trim_end_matches('.').to_string()
         } else {
-            name
-        };
+            name.to_string()
+        }
+    }
+}
 
-        name.to_string()
+/// Detect Rock Ridge by inspecting the root directory's `.` (self) record: its
+/// System Use area carries the SUSP `SP` indicator and Rock Ridge entries when
+/// the disc uses the extension. Returns `false` on any read/parse failure.
+fn detect_rock_ridge_root(reader: &mut dyn SectorReader, root_lba: u32, root_size: u32) -> bool {
+    if root_size == 0 {
+        return false;
+    }
+    let want = (root_size as usize).min(SECTOR_SIZE as usize);
+    let data = match reader.read_bytes(root_lba as u64 * SECTOR_SIZE, want) {
+        Ok(d) => d,
+        Err(_) => return false,
+    };
+    if data.is_empty() {
+        return false;
+    }
+    let rec_len = data[0] as usize;
+    if rec_len == 0 || rec_len > data.len() {
+        return false;
+    }
+    match DirectoryRecord::parse(&data[..rec_len]) {
+        Some(rec) => super::rockridge::detect(&rec.system_use),
+        None => false,
     }
 }
 
@@ -569,7 +676,7 @@ mod tests {
         assert!(!rec.is_directory());
         assert!(!rec.is_self());
         assert!(!rec.is_parent());
-        assert_eq!(rec.clean_name(), "TEST.TXT");
+        assert_eq!(rec.clean_name(false), "TEST.TXT");
     }
 
     #[test]
@@ -606,9 +713,11 @@ mod tests {
             extent_location: 0,
             data_length: 0,
             file_flags: 0,
-            file_identifier: "ARCHIVE.TAR;1".to_string(),
+            file_identifier: b"ARCHIVE.TAR;1".to_vec(),
+            recorded: None,
+            system_use: Vec::new(),
         };
-        assert_eq!(rec.clean_name(), "ARCHIVE.TAR");
+        assert_eq!(rec.clean_name(false), "ARCHIVE.TAR");
     }
 
     #[test]
@@ -617,8 +726,190 @@ mod tests {
             extent_location: 0,
             data_length: 0,
             file_flags: 0x02,
-            file_identifier: "SYSTEM.".to_string(),
+            file_identifier: b"SYSTEM.".to_vec(),
+            recorded: None,
+            system_use: Vec::new(),
         };
-        assert_eq!(rec.clean_name(), "SYSTEM");
+        assert_eq!(rec.clean_name(false), "SYSTEM");
+    }
+
+    #[test]
+    fn clean_name_decodes_joliet_utf16be() {
+        // "Café" in UTF-16BE, with a ";1" version suffix (ASCII, still UTF-16BE).
+        let mut id: Vec<u8> = Vec::new();
+        for u in "Café;1".encode_utf16() {
+            id.extend_from_slice(&u.to_be_bytes());
+        }
+        let rec = DirectoryRecord {
+            extent_location: 0,
+            data_length: 0,
+            file_flags: 0,
+            file_identifier: id,
+            recorded: None,
+            system_use: Vec::new(),
+        };
+        assert_eq!(rec.clean_name(true), "Café");
+    }
+
+    // ── End-to-end: recording dates, Rock Ridge, Joliet ─────────────────────
+
+    use crate::browse::entry::FileTimestamps;
+
+    /// Build a SUSP entry: signature(2) + length(1) + version(1) + data.
+    fn susp(sig: &[u8; 2], data: &[u8]) -> Vec<u8> {
+        let mut v = vec![sig[0], sig[1], (4 + data.len()) as u8, 1];
+        v.extend_from_slice(data);
+        v
+    }
+
+    /// Encode an ISO 9660 "both-endian" u32.
+    fn both(n: u32) -> Vec<u8> {
+        let mut v = n.to_le_bytes().to_vec();
+        v.extend_from_slice(&n.to_be_bytes());
+        v
+    }
+
+    /// Build a directory record with an optional recording date and System Use.
+    fn dir_record(
+        extent: u32,
+        size: u32,
+        flags: u8,
+        id: &[u8],
+        recorded: Option<[u8; 7]>,
+        system_use: &[u8],
+    ) -> Vec<u8> {
+        let id_len = id.len();
+        let su_start = 33 + id_len + (1 - id_len % 2);
+        let mut rec_len = su_start + system_use.len();
+        if rec_len % 2 != 0 {
+            rec_len += 1; // directory records are even-length
+        }
+        let mut r = vec![0u8; rec_len];
+        r[0] = rec_len as u8;
+        r[2..6].copy_from_slice(&extent.to_le_bytes());
+        r[6..10].copy_from_slice(&extent.to_be_bytes());
+        r[10..14].copy_from_slice(&size.to_le_bytes());
+        r[14..18].copy_from_slice(&size.to_be_bytes());
+        if let Some(d) = recorded {
+            r[18..25].copy_from_slice(&d);
+        }
+        r[25] = flags;
+        r[32] = id_len as u8;
+        r[33..33 + id_len].copy_from_slice(id);
+        r[su_start..su_start + system_use.len()].copy_from_slice(system_use);
+        r
+    }
+
+    #[test]
+    fn rock_ridge_end_to_end() {
+        const SEC: usize = SECTOR_SIZE as usize;
+        let mut img = vec![0u8; 21 * SEC];
+
+        // PVD (sector 16): primary root at sector 18.
+        img[16 * SEC..17 * SEC].copy_from_slice(&build_test_pvd_sector("RR_DISC", 18, SEC as u32));
+        // Terminator (sector 17).
+        img[17 * SEC] = 0xFF;
+        img[17 * SEC + 1..17 * SEC + 6].copy_from_slice(b"CD001");
+
+        // Rock Ridge System Use for the file: PX + TF + NM.
+        let mut px = Vec::new();
+        px.extend(both(0o100_644)); // mode
+        px.extend(both(1)); // nlink
+        px.extend(both(501)); // uid
+        px.extend(both(20)); // gid
+        let mut tf = vec![0b0000_0010u8]; // modify only, short form
+        tf.extend_from_slice(&[98, 6, 1, 8, 30, 0, 0]);
+        let mut nm = vec![0u8];
+        nm.extend_from_slice(b"real name.txt");
+        let mut su = Vec::new();
+        su.extend(susp(b"PX", &px));
+        su.extend(susp(b"TF", &tf));
+        su.extend(susp(b"NM", &nm));
+
+        // Root directory (sector 18): `.` (with SP), `..`, and the file record.
+        let mut dir = Vec::new();
+        dir.extend(dir_record(
+            18,
+            SEC as u32,
+            0x02,
+            &[0x00],
+            None,
+            &susp(b"SP", &[0xBE, 0xEF, 0]),
+        ));
+        dir.extend(dir_record(18, SEC as u32, 0x02, &[0x01], None, &[]));
+        dir.extend(dir_record(
+            20,
+            5,
+            0x00,
+            b"FILE.TXT;1",
+            Some([97, 3, 18, 16, 45, 47, 0]),
+            &su,
+        ));
+        img[18 * SEC..18 * SEC + dir.len()].copy_from_slice(&dir);
+        // File content (sector 20).
+        img[20 * SEC..20 * SEC + 5].copy_from_slice(b"hello");
+
+        let mut fs = Iso9660Filesystem::new(Box::new(CursorReader(Cursor::new(img)))).unwrap();
+        assert!(!fs.joliet, "Rock Ridge disc should browse the primary tree");
+        let root = fs.root().unwrap();
+        let entries = fs.list_directory(&root).unwrap();
+        assert_eq!(entries.len(), 1);
+        let f = &entries[0];
+        // NM overrode the 8.3 identifier.
+        assert_eq!(f.name, "real name.txt");
+        // PX populated POSIX metadata.
+        let px = f.posix.expect("posix present");
+        assert_eq!(px.uid, 501);
+        assert_eq!(px.gid, 20);
+        assert_eq!(px.permission_bits(), 0o644);
+        // Recording date + Rock Ridge TF modify time.
+        match f.timestamps {
+            Some(FileTimestamps::Iso9660 {
+                recorded, modified, ..
+            }) => {
+                assert_eq!(recorded.year(), 1997);
+                assert_eq!(modified.expect("TF modify").year(), 1998);
+            }
+            _ => panic!("expected ISO 9660 timestamps"),
+        }
+    }
+
+    #[test]
+    fn joliet_end_to_end_prefers_unicode_names() {
+        const SEC: usize = SECTOR_SIZE as usize;
+        let mut img = vec![0u8; 21 * SEC];
+
+        // PVD (16): primary root at 18. Joliet SVD (17): joliet root at 19.
+        img[16 * SEC..17 * SEC].copy_from_slice(&build_test_pvd_sector("PRIMARY", 18, SEC as u32));
+        let mut svd = build_test_pvd_sector("PRIMARY", 19, SEC as u32);
+        svd[0] = 0x02; // Supplementary
+        svd[88..91].copy_from_slice(b"%/E"); // Joliet escape
+        img[17 * SEC..18 * SEC].copy_from_slice(&svd);
+
+        // Primary root (18): 8.3 name.
+        let mut pdir = Vec::new();
+        pdir.extend(dir_record(18, SEC as u32, 0x02, &[0x00], None, &[]));
+        pdir.extend(dir_record(18, SEC as u32, 0x02, &[0x01], None, &[]));
+        pdir.extend(dir_record(20, 5, 0x00, b"FILE.TXT;1", None, &[]));
+        img[18 * SEC..18 * SEC + pdir.len()].copy_from_slice(&pdir);
+
+        // Joliet root (19): UTF-16BE Unicode name.
+        let uni: Vec<u8> = "Café.txt;1"
+            .encode_utf16()
+            .flat_map(u16::to_be_bytes)
+            .collect();
+        let mut jdir = Vec::new();
+        jdir.extend(dir_record(19, SEC as u32, 0x02, &[0x00], None, &[]));
+        jdir.extend(dir_record(19, SEC as u32, 0x02, &[0x01], None, &[]));
+        jdir.extend(dir_record(20, 5, 0x00, &uni, None, &[]));
+        img[19 * SEC..19 * SEC + jdir.len()].copy_from_slice(&jdir);
+        img[20 * SEC..20 * SEC + 5].copy_from_slice(b"hello");
+
+        let mut fs = Iso9660Filesystem::new(Box::new(CursorReader(Cursor::new(img)))).unwrap();
+        assert!(fs.joliet, "should select the Joliet tree");
+        let root = fs.root().unwrap();
+        let entries = fs.list_directory(&root).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].name, "Café.txt");
     }
 }

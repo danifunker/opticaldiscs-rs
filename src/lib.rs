@@ -76,10 +76,15 @@ pub mod drives;
 // ── Top-level re-exports ──────────────────────────────────────────────────────
 
 // Phase 1
-pub use browse::entry::{EntryType, FileEntry};
+pub use browse::entry::{
+    EntryType, FileEntry, FileTimestamps, PosixMetadata, MAC_EPOCH_UNIX_OFFSET,
+};
 pub use browse::filesystem::{Filesystem, FilesystemError};
 pub use error::OpticaldiscsError;
 pub use formats::{supported_extensions, DiscFormat, FilesystemType};
+
+// ISO 9660 metadata types
+pub use iso9660::{Iso9660DateTime, JolietVolumeDescriptor, PrimaryVolumeDescriptor, PvdDateTime};
 
 // Phase 2
 pub use sector_reader::SectorReader;
