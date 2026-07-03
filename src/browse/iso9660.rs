@@ -27,6 +27,9 @@ pub struct Iso9660Filesystem {
     /// When set, the browsed tree is a Joliet tree, so directory-record
     /// identifiers are decoded as UTF-16BE.
     joliet: bool,
+    /// When set, the volume is High Sierra Format, whose directory records place
+    /// the file-flags byte at offset 24 (ISO 9660 uses 25).
+    high_sierra: bool,
 }
 
 impl Iso9660Filesystem {
@@ -45,13 +48,16 @@ impl Iso9660Filesystem {
     pub fn new(mut reader: Box<dyn SectorReader>) -> Result<Self, FilesystemError> {
         let pvd = PrimaryVolumeDescriptor::read_from(&mut *reader)
             .map_err(|e| FilesystemError::Parse(e.to_string()))?;
+        let high_sierra = pvd.high_sierra;
 
         // Prefer Rock Ridge on the primary tree; only fall back to Joliet when
-        // the primary tree has no Rock Ridge extensions.
+        // the primary tree has no Rock Ridge extensions. (High Sierra predates
+        // both, so neither probe will match — it browses its primary tree.)
         let rock_ridge = detect_rock_ridge_root(
             reader.as_mut(),
             pvd.root_directory_lba,
             pvd.root_directory_size,
+            high_sierra,
         );
         let joliet_svd = if rock_ridge {
             None
@@ -82,6 +88,7 @@ impl Iso9660Filesystem {
             root_size,
             volume_id,
             joliet,
+            high_sierra,
         })
     }
 
@@ -128,7 +135,9 @@ impl Iso9660Filesystem {
                 break;
             }
 
-            if let Some(rec) = DirectoryRecord::parse(&data[offset..offset + record_length]) {
+            if let Some(rec) =
+                DirectoryRecord::parse(&data[offset..offset + record_length], self.high_sierra)
+            {
                 if !rec.is_self() && !rec.is_parent() {
                     let mut name = rec.clean_name(self.joliet);
                     // Rock Ridge overrides (name, POSIX, timestamps, symlink) are
@@ -308,16 +317,25 @@ impl DirectoryRecord {
     /// Parse a directory record from a raw byte slice.
     ///
     /// Returns `None` if the slice is shorter than 33 bytes or the record
-    /// length field is zero.
-    fn parse(data: &[u8]) -> Option<Self> {
+    /// length field is zero. When `high_sierra` is set, the file-flags byte is
+    /// read from offset 24 and the recording date/time is the 6-byte High Sierra
+    /// form (no GMT-offset byte); ISO 9660 uses offset 25 and a 7-byte date.
+    fn parse(data: &[u8], high_sierra: bool) -> Option<Self> {
         if data.len() < 33 || data[0] == 0 {
             return None;
         }
 
         let extent_location = u32::from_le_bytes(data[2..6].try_into().ok()?);
         let data_length = u32::from_le_bytes(data[10..14].try_into().ok()?);
-        let recorded = Iso9660DateTime::parse(&data[18..25]);
-        let file_flags = data[25];
+        let (recorded, file_flags) = if high_sierra {
+            // High Sierra: 6-byte date at 18..24, flags at 24. Pad to the 7-byte
+            // form (GMT offset 0) so the shared date parser can read it.
+            let mut dt = [0u8; 7];
+            dt[..6].copy_from_slice(&data[18..24]);
+            (Iso9660DateTime::parse(&dt), data[24])
+        } else {
+            (Iso9660DateTime::parse(&data[18..25]), data[25])
+        };
         let id_len = data[32] as usize;
 
         if data.len() < 33 + id_len {
@@ -392,7 +410,12 @@ impl DirectoryRecord {
 /// Detect Rock Ridge by inspecting the root directory's `.` (self) record: its
 /// System Use area carries the SUSP `SP` indicator and Rock Ridge entries when
 /// the disc uses the extension. Returns `false` on any read/parse failure.
-fn detect_rock_ridge_root(reader: &mut dyn SectorReader, root_lba: u32, root_size: u32) -> bool {
+fn detect_rock_ridge_root(
+    reader: &mut dyn SectorReader,
+    root_lba: u32,
+    root_size: u32,
+    high_sierra: bool,
+) -> bool {
     if root_size == 0 {
         return false;
     }
@@ -408,7 +431,7 @@ fn detect_rock_ridge_root(reader: &mut dyn SectorReader, root_lba: u32, root_siz
     if rec_len == 0 || rec_len > data.len() {
         return false;
     }
-    match DirectoryRecord::parse(&data[..rec_len]) {
+    match DirectoryRecord::parse(&data[..rec_len], high_sierra) {
         Some(rec) => super::rockridge::detect(&rec.system_use),
         None => false,
     }
@@ -670,7 +693,7 @@ mod tests {
         data[32] = id_len as u8;
         data[33..33 + id_len].copy_from_slice(name);
 
-        let rec = DirectoryRecord::parse(&data).unwrap();
+        let rec = DirectoryRecord::parse(&data, false).unwrap();
         assert_eq!(rec.extent_location, 42);
         assert_eq!(rec.data_length, 1024);
         assert!(!rec.is_directory());
@@ -686,7 +709,7 @@ mod tests {
         data[25] = 0x02;
         data[32] = 1;
         data[33] = 0x00; // self identifier
-        let rec = DirectoryRecord::parse(&data).unwrap();
+        let rec = DirectoryRecord::parse(&data, false).unwrap();
         assert!(rec.is_self());
         assert!(rec.is_directory());
     }
@@ -698,13 +721,13 @@ mod tests {
         data[25] = 0x02;
         data[32] = 1;
         data[33] = 0x01; // parent identifier
-        let rec = DirectoryRecord::parse(&data).unwrap();
+        let rec = DirectoryRecord::parse(&data, false).unwrap();
         assert!(rec.is_parent());
     }
 
     #[test]
     fn directory_record_too_short_returns_none() {
-        assert!(DirectoryRecord::parse(&[0u8; 32]).is_none());
+        assert!(DirectoryRecord::parse(&[0u8; 32], false).is_none());
     }
 
     #[test]
@@ -911,5 +934,88 @@ mod tests {
         let entries = fs.list_directory(&root).unwrap();
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].name, "Café.txt");
+    }
+
+    // ── High Sierra Format ──────────────────────────────────────────────────
+
+    /// Build a High Sierra volume descriptor sector: `CDROM` id at byte 9,
+    /// descriptor type at byte 8, volume id at 48, root directory record at 180.
+    fn build_hsf_vd_sector(label: &str, root_lba: u32, root_size: u32) -> Vec<u8> {
+        let mut s = vec![0u8; SECTOR_SIZE as usize];
+        s[8] = 1; // Standard File Structure Volume Descriptor
+        s[9..14].copy_from_slice(b"CDROM");
+        s[14] = 1; // version
+        let lab = label.as_bytes();
+        s[48..48 + lab.len()].copy_from_slice(lab);
+        s[136..138].copy_from_slice(&2048u16.to_le_bytes()); // logical block size
+        // Root directory record at offset 180 (flags at HSF offset 24).
+        let r = &mut s[180..214];
+        r[0] = 34;
+        r[2..6].copy_from_slice(&root_lba.to_le_bytes());
+        r[6..10].copy_from_slice(&root_lba.to_be_bytes());
+        r[10..14].copy_from_slice(&root_size.to_le_bytes());
+        r[14..18].copy_from_slice(&root_size.to_be_bytes());
+        r[24] = 0x02; // directory flag
+        r[32] = 1;
+        r[33] = 0x00;
+        s
+    }
+
+    /// Build a High Sierra directory record (file flags at offset 24, no
+    /// System Use area).
+    fn hsf_dir_record(extent: u32, size: u32, flags: u8, id: &[u8]) -> Vec<u8> {
+        let id_len = id.len();
+        let mut rec_len = 33 + id_len + (1 - id_len % 2);
+        if rec_len % 2 != 0 {
+            rec_len += 1;
+        }
+        let mut r = vec![0u8; rec_len];
+        r[0] = rec_len as u8;
+        r[2..6].copy_from_slice(&extent.to_le_bytes());
+        r[6..10].copy_from_slice(&extent.to_be_bytes());
+        r[10..14].copy_from_slice(&size.to_le_bytes());
+        r[14..18].copy_from_slice(&size.to_be_bytes());
+        r[24] = flags; // High Sierra flags offset
+        r[32] = id_len as u8;
+        r[33..33 + id_len].copy_from_slice(id);
+        r
+    }
+
+    #[test]
+    fn high_sierra_end_to_end() {
+        const SEC: usize = SECTOR_SIZE as usize;
+        let mut img = vec![0u8; 21 * SEC];
+
+        // HSF volume descriptor at sector 16, root directory at sector 18.
+        img[16 * SEC..17 * SEC].copy_from_slice(&build_hsf_vd_sector("HSFDISC", 18, SEC as u32));
+
+        // Root directory (18): '.', '..', a subdirectory, and a file. The
+        // directory-vs-file distinction rides on the flags byte at offset 24 —
+        // if the parser used ISO 9660's offset 25 these would misclassify.
+        let mut dir = Vec::new();
+        dir.extend(hsf_dir_record(18, SEC as u32, 0x02, &[0x00]));
+        dir.extend(hsf_dir_record(18, SEC as u32, 0x02, &[0x01]));
+        dir.extend(hsf_dir_record(19, SEC as u32, 0x02, b"SUBDIR"));
+        dir.extend(hsf_dir_record(20, 5, 0x00, b"FILE.TXT;1"));
+        img[18 * SEC..18 * SEC + dir.len()].copy_from_slice(&dir);
+        // File content at sector 20.
+        img[20 * SEC..20 * SEC + 5].copy_from_slice(b"hello");
+
+        let mut fs = Iso9660Filesystem::new(Box::new(CursorReader(Cursor::new(img)))).unwrap();
+        assert!(fs.high_sierra, "should detect High Sierra");
+        assert!(!fs.joliet);
+        assert_eq!(fs.volume_name(), Some("HSFDISC"));
+
+        let root = fs.root().unwrap();
+        let entries = fs.list_directory(&root).unwrap();
+        assert_eq!(entries.len(), 2);
+        // Directories sort first.
+        assert_eq!(entries[0].name, "SUBDIR");
+        assert!(entries[0].is_directory());
+        assert_eq!(entries[1].name, "FILE.TXT");
+        assert!(entries[1].is_file());
+        assert_eq!(entries[1].size, 5);
+        // File read exercises the shared read path.
+        assert_eq!(fs.read_file(&entries[1]).unwrap(), b"hello");
     }
 }

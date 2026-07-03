@@ -56,7 +56,9 @@ pub fn open_disc_filesystem(info: &DiscImageInfo) -> Result<Box<dyn Filesystem>,
     let mut reader = open_sector_reader(info)?;
 
     match info.filesystem {
-        FilesystemType::Iso9660 => Ok(Box::new(Iso9660Filesystem::new(reader)?)),
+        FilesystemType::Iso9660 | FilesystemType::HighSierra => {
+            Ok(Box::new(Iso9660Filesystem::new(reader)?))
+        }
 
         FilesystemType::Efs => {
             let partition_offset = info.efs_partition_offset.ok_or_else(|| {

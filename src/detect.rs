@@ -565,9 +565,14 @@ fn probe_sgi_detail(reader: &mut dyn SectorReader) -> SgiProbe {
 pub(crate) fn probe_filesystem(
     reader: &mut dyn SectorReader,
 ) -> Result<(FilesystemType, Option<PrimaryVolumeDescriptor>)> {
-    // ── Try ISO 9660 ────────────────────────────────────────────────────────
+    // ── Try ISO 9660 / High Sierra ──────────────────────────────────────────
     if let Ok(pvd) = PrimaryVolumeDescriptor::read_from(reader) {
-        return Ok((FilesystemType::Iso9660, Some(pvd)));
+        let fs = if pvd.high_sierra {
+            FilesystemType::HighSierra
+        } else {
+            FilesystemType::Iso9660
+        };
+        return Ok((fs, Some(pvd)));
     }
 
     // ── Try HFS / HFS+ signature at byte 1024 ───────────────────────────────

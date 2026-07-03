@@ -17,6 +17,10 @@ pub const PVD_OFFSET: u64 = PVD_SECTOR * crate::sector_reader::SECTOR_SIZE;
 const PVD_TYPE: u8 = 0x01;
 const VD_SET_TERMINATOR_TYPE: u8 = 0xFF;
 const ISO9660_ID: &[u8; 5] = b"CD001";
+/// Standard identifier for a High Sierra Format volume descriptor. Unlike
+/// ISO 9660's `CD001` at byte 1, High Sierra places `CDROM` at byte 9 (after an
+/// 8-byte logical-block-number prefix) and its descriptor type at byte 8.
+const HIGH_SIERRA_ID: &[u8; 5] = b"CDROM";
 
 /// A date/time decoded from a 17-byte ISO 9660 "dec-datetime" field
 /// (ECMA-119 §8.4.26.1).
@@ -212,6 +216,10 @@ pub struct PrimaryVolumeDescriptor {
     pub expiration_date: Option<PvdDateTime>,
     /// Volume effective date/time (PVD offset 864), `None` if not specified.
     pub effective_date: Option<PvdDateTime>,
+    /// True when this descriptor is High Sierra Format rather than ISO 9660.
+    /// The directory-record layout differs (file flags at offset 24, not 25),
+    /// so the browser must be told which variant it is walking.
+    pub high_sierra: bool,
 }
 
 impl PrimaryVolumeDescriptor {
@@ -228,6 +236,12 @@ impl PrimaryVolumeDescriptor {
                 "sector too small: {} bytes",
                 sector.len()
             )));
+        }
+
+        // High Sierra Format is distinguished by its `CDROM` identifier at byte
+        // 9 (descriptor type at byte 8), versus ISO 9660's `CD001` at byte 1.
+        if &sector[9..14] == HIGH_SIERRA_ID {
+            return Self::parse_high_sierra(sector);
         }
 
         match sector[0] {
@@ -291,6 +305,54 @@ impl PrimaryVolumeDescriptor {
             modification_date,
             expiration_date,
             effective_date,
+            high_sierra: false,
+        })
+    }
+
+    /// Parse a High Sierra Format (pre-ISO 9660) volume descriptor.
+    ///
+    /// High Sierra prepends an 8-byte logical-block-number to every descriptor,
+    /// so the standard identifier `CDROM` lands at byte 9 and every field is
+    /// shifted relative to ISO 9660. Only the fields needed to browse the volume
+    /// are extracted; the ISO-specific volume dates / publisher / application
+    /// strings are left empty. Field offsets follow the 1986 High Sierra spec
+    /// (as implemented by cdrtools' `hs_primary_descriptor`).
+    fn parse_high_sierra(sector: &[u8]) -> Result<Self> {
+        // Byte 8 is the descriptor type; the Standard File Structure Volume
+        // Descriptor (the one carrying the root directory) is type 1.
+        if sector[8] != PVD_TYPE {
+            return Err(OpticaldiscsError::Parse(format!(
+                "High Sierra descriptor at sector 16 has type {} (expected 1)",
+                sector[8]
+            )));
+        }
+
+        let system_id = Self::extract_str(&sector[16..48]);
+        let volume_id = Self::extract_str(&sector[48..80]);
+        let volume_space_size = u32::from_le_bytes(sector[88..92].try_into().unwrap());
+        let logical_block_size = u16::from_le_bytes(sector[136..138].try_into().unwrap());
+
+        // Root Directory Record is embedded at offset 180 (34 bytes). Its extent
+        // location and data length share ISO 9660's layout (LE at 2 and 10).
+        let rdr = &sector[180..214];
+        let root_directory_lba = u32::from_le_bytes(rdr[2..6].try_into().unwrap());
+        let root_directory_size = u32::from_le_bytes(rdr[10..14].try_into().unwrap());
+
+        Ok(Self {
+            volume_id,
+            system_id,
+            volume_set_id: String::new(),
+            publisher_id: String::new(),
+            application_id: String::new(),
+            volume_space_size,
+            logical_block_size,
+            root_directory_lba,
+            root_directory_size,
+            creation_date: None,
+            modification_date: None,
+            expiration_date: None,
+            effective_date: None,
+            high_sierra: true,
         })
     }
 

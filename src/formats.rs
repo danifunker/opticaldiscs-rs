@@ -59,6 +59,10 @@ pub fn supported_extensions() -> &'static [&'static str] {
 pub enum FilesystemType {
     /// ISO 9660 standard filesystem (data CDs, DVDs).
     Iso9660,
+    /// High Sierra Format — the pre-ISO 9660 CD-ROM filesystem (1986 standard,
+    /// `CDROM` identifier). Early Microsoft/IBM titles (Bookshelf, Programmer's
+    /// Library). Browsed by the ISO 9660 reader with High-Sierra field offsets.
+    HighSierra,
     /// Joliet extensions (Unicode long filenames on top of ISO 9660).
     Joliet,
     /// Universal Disk Format (DVDs, Blu-ray).
@@ -78,6 +82,7 @@ impl FilesystemType {
     pub fn display_name(self) -> &'static str {
         match self {
             Self::Iso9660 => "ISO 9660",
+            Self::HighSierra => "High Sierra",
             Self::Joliet => "Joliet",
             Self::Udf => "UDF",
             Self::Hfs => "HFS",
@@ -89,7 +94,10 @@ impl FilesystemType {
 
     /// Returns true if this filesystem can be browsed by the library.
     pub fn is_browsable(self) -> bool {
-        matches!(self, Self::Iso9660 | Self::Hfs | Self::HfsPlus | Self::Efs)
+        matches!(
+            self,
+            Self::Iso9660 | Self::HighSierra | Self::Hfs | Self::HfsPlus | Self::Efs
+        )
     }
 }
 
