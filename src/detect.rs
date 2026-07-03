@@ -606,6 +606,11 @@ pub(crate) fn probe_filesystem(
         return Ok((FilesystemType::Ufs, None));
     }
 
+    // ── Try VMS ODS-2 / Files-11 — OpenVMS discs ────────────────────────────
+    if crate::browse::ods2::detect_ods2(reader) {
+        return Ok((FilesystemType::Ods2, None));
+    }
+
     Ok((FilesystemType::Unknown, None))
 }
 

@@ -24,13 +24,17 @@ pub mod efs;
 // BSD UFS / FFS
 pub mod ufs;
 
+// VMS ODS-2 / Files-11
+pub mod ods2;
+
 pub use efs::EfsFilesystem;
-pub use ufs::UfsFilesystem;
 pub use entry::{EntryType, FileEntry};
 pub use filesystem::{Filesystem, FilesystemError};
 pub use hfs::HfsFilesystem;
 pub use hfsplus::HfsPlusFilesystem;
 pub use iso9660::Iso9660Filesystem;
+pub use ods2::Ods2Filesystem;
+pub use ufs::UfsFilesystem;
 
 use crate::detect::DiscImageInfo;
 use crate::error::OpticaldiscsError;
@@ -74,6 +78,8 @@ pub fn open_disc_filesystem(info: &DiscImageInfo) -> Result<Box<dyn Filesystem>,
         }
 
         FilesystemType::Ufs => Ok(Box::new(UfsFilesystem::new(reader)?)),
+
+        FilesystemType::Ods2 => Ok(Box::new(Ods2Filesystem::new(reader)?)),
 
         FilesystemType::Hfs | FilesystemType::HfsPlus => {
             // Use resolve_apple_hfs to get the correct offset — this handles

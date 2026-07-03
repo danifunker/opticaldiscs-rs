@@ -75,6 +75,8 @@ pub enum FilesystemType {
     Efs,
     /// UFS / FFS (BSD Fast File System) — Digital UNIX / Tru64, SunOS/Solaris CDs.
     Ufs,
+    /// VMS ODS-2 / Files-11 — OpenVMS (VAX / Alpha) discs.
+    Ods2,
     /// Could not be determined.
     Unknown,
 }
@@ -91,6 +93,7 @@ impl FilesystemType {
             Self::HfsPlus => "HFS+",
             Self::Efs => "EFS",
             Self::Ufs => "UFS",
+            Self::Ods2 => "ODS-2",
             Self::Unknown => "Unknown",
         }
     }
@@ -99,7 +102,13 @@ impl FilesystemType {
     pub fn is_browsable(self) -> bool {
         matches!(
             self,
-            Self::Iso9660 | Self::HighSierra | Self::Hfs | Self::HfsPlus | Self::Efs | Self::Ufs
+            Self::Iso9660
+                | Self::HighSierra
+                | Self::Hfs
+                | Self::HfsPlus
+                | Self::Efs
+                | Self::Ufs
+                | Self::Ods2
         )
     }
 }
