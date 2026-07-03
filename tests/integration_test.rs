@@ -33,7 +33,11 @@ fn filesystem_type_browsable() {
     assert!(FilesystemType::Iso9660.is_browsable());
     assert!(FilesystemType::Hfs.is_browsable());
     assert!(FilesystemType::HfsPlus.is_browsable());
-    assert!(!FilesystemType::Udf.is_browsable());
+    assert!(FilesystemType::Efs.is_browsable());
+    assert!(FilesystemType::Ufs.is_browsable());
+    assert!(FilesystemType::Ods2.is_browsable());
+    assert!(FilesystemType::HighSierra.is_browsable());
+    assert!(FilesystemType::Udf.is_browsable());
     assert!(!FilesystemType::Unknown.is_browsable());
 }
 

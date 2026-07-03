@@ -109,6 +109,7 @@ impl FilesystemType {
                 | Self::Efs
                 | Self::Ufs
                 | Self::Ods2
+                | Self::Udf
         )
     }
 }

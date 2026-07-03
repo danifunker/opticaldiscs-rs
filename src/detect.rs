@@ -565,6 +565,11 @@ fn probe_sgi_detail(reader: &mut dyn SectorReader) -> SgiProbe {
 pub(crate) fn probe_filesystem(
     reader: &mut dyn SectorReader,
 ) -> Result<(FilesystemType, Option<PrimaryVolumeDescriptor>)> {
+    // ── Try UDF first (a UDF/ISO bridge disc should present its UDF tree) ────
+    if crate::browse::udf::detect_udf(reader) {
+        return Ok((FilesystemType::Udf, None));
+    }
+
     // ── Try ISO 9660 / High Sierra ──────────────────────────────────────────
     if let Ok(pvd) = PrimaryVolumeDescriptor::read_from(reader) {
         let fs = if pvd.high_sierra {

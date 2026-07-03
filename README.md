@@ -57,6 +57,7 @@ for the full list of supported targets, glibc floors, and escape hatches.
 | SGI Volume Header + EFS filesystem browser (IRIX CDs) | ✓ (since 0.3.0) |
 | UFS1 / FFS browser — Digital UNIX/Tru64, SunOS; NeXT/OpenStep/Rhapsody | ✓ (since 0.7.0) |
 | VMS ODS-2 / Files-11 browser (OpenVMS VAX/Alpha) | ✓ (since 0.7.0) |
+| UDF browser — DVD / data discs (physical partition, UDF 1.02–2.01) | ✓ (since 0.7.0) |
 | TOC + MusicBrainz/FreeDB DiscID | ✓ (`toc` feature) |
 | Physical optical drive enumeration | ✓ (`drives` feature) |
 

@@ -26,6 +26,13 @@ All notable changes to this crate are documented here. This project follows
   (OFSFMT) directory format, symlink targets, and special-inode handling. Also
   reads **NeXTSTEP / OpenStep / Rhapsody** FFS wrapped in a `dlV` disk label
   (partition base auto-located; NeXT keeps big-endian FFS even on Intel).
+- **UDF browser** (`browse/udf.rs`, `FilesystemType::Udf`) for DVD / data-disc
+  Universal Disk Format (physical-partition layout, UDF 1.02–2.01): AVDP →
+  Volume Descriptor Sequence → File Set Descriptor → File Entry / Extended File
+  Entry → File Identifier Descriptors. Short/long/inline allocation descriptors,
+  OSTA CS0 (8- and 16-bit) filename decoding, UDF/ISO **bridge** discs present
+  the UDF tree. Blu-ray / UDF 2.50+ metadata-partition discs are detected and
+  reported (not yet browsable).
 - **VMS ODS-2 / Files-11 browser** (`browse/ods2.rs`, `FilesystemType::Ods2`)
   for OpenVMS (VAX/Alpha) discs: home block → index-file headers → retrieval
   pointers (formats 1/2/3) → file data; directory records resolve name+version
