@@ -52,6 +52,7 @@ const D1_OFF_IB: usize = 88; // di_ib[3]  i32
 const S_IFMT: u16 = 0o170000;
 const S_IFDIR: u16 = 0o040000;
 const S_IFLNK: u16 = 0o120000;
+const S_IFREG: u16 = 0o100000;
 
 /// Cap on how many bytes of a directory we will read (protects against a corrupt
 /// di_size). 64 MiB is far beyond any real directory.
@@ -62,6 +63,10 @@ const MAX_DIR_BYTES: u64 = 64 * 1024 * 1024;
 /// Read-only UFS1 filesystem browser over a [`SectorReader`].
 pub struct UfsFilesystem {
     reader: Box<dyn SectorReader>,
+    /// Byte offset of the start of the UFS partition within the image. 0 for a
+    /// whole-disc UFS (Tru64 CDs); non-zero for a filesystem inside a NeXT disk
+    /// label. All fragment addresses are relative to this base.
+    base_offset: u64,
     big_endian: bool,
     bsize: u64,
     fsize: u64,
@@ -100,13 +105,16 @@ impl Dinode {
     fn is_symlink(&self) -> bool {
         (self.mode & S_IFMT) == S_IFLNK
     }
+    fn is_regular(&self) -> bool {
+        (self.mode & S_IFMT) == S_IFREG
+    }
 }
 
 impl UfsFilesystem {
     /// Open a UFS filesystem, auto-detecting the superblock location and
     /// endianness. Fails on UFS2 or when no UFS superblock is found.
     pub fn new(mut reader: Box<dyn SectorReader>) -> Result<Self, FilesystemError> {
-        let (sb, big_endian) = Self::find_superblock(reader.as_mut())?;
+        let (sb, big_endian, base_offset) = Self::find_base(reader.as_mut())?;
 
         let ri = |o: usize| -> i64 {
             let b = [sb[o], sb[o + 1], sb[o + 2], sb[o + 3]];
@@ -156,6 +164,7 @@ impl UfsFilesystem {
 
         Ok(Self {
             reader,
+            base_offset,
             big_endian,
             bsize,
             fsize,
@@ -173,33 +182,54 @@ impl UfsFilesystem {
         })
     }
 
-    /// Locate the superblock and determine byte order. Probes the UFS1 offset
-    /// (8192) then the UFS2 offset (65536); UFS2 is detected but not supported.
-    fn find_superblock(
-        reader: &mut dyn SectorReader,
-    ) -> Result<(Vec<u8>, bool), FilesystemError> {
+    /// Locate the UFS1 superblock, its byte order, and the partition base offset.
+    ///
+    /// A whole-disc UFS (Tru64 CD) has its superblock at the fixed offset 8192
+    /// (base 0). A NeXT disc wraps one or more FFS partitions inside a `dlV` disk
+    /// label; there the superblock sits at `partition_base + 8192`, and a disc
+    /// may hold several partitions (NeXTSTEP: one; Rhapsody: a small boot volume
+    /// plus the real root). We scan block-aligned offsets for UFS1 magic and pick
+    /// the candidate whose root inode is a directory with the most entries — the
+    /// real root filesystem.
+    fn find_base(reader: &mut dyn SectorReader) -> Result<(Vec<u8>, bool, u64), FilesystemError> {
+        // Fast path: whole-disc UFS at the fixed offset (Tru64).
         for &off in &[SB_OFFSET_UFS1, SB_OFFSET_UFS2] {
-            let sb = match reader.read_bytes(off, SB_READ_SIZE) {
-                Ok(b) if b.len() >= SB_READ_SIZE => b,
-                _ => continue,
-            };
-            let m = &sb[MAGIC_OFF..MAGIC_OFF + 4];
-            let le = u32::from_le_bytes([m[0], m[1], m[2], m[3]]);
-            let be = u32::from_be_bytes([m[0], m[1], m[2], m[3]]);
-            let big_endian = if le == MAGIC_UFS1 || le == MAGIC_UFS2 {
-                false
-            } else if be == MAGIC_UFS1 || be == MAGIC_UFS2 {
-                true
-            } else {
-                continue;
-            };
-            let magic = if big_endian { be } else { le };
-            if magic == MAGIC_UFS2 {
-                return Err(FilesystemError::Unsupported);
+            if let Some((sb, be, magic)) = read_sb_magic(reader, off) {
+                if magic == MAGIC_UFS2 {
+                    return Err(FilesystemError::Unsupported);
+                }
+                return Ok((sb, be, 0));
             }
-            return Ok((sb, big_endian));
         }
-        Err(FilesystemError::Parse("no UFS superblock found".into()))
+
+        // NeXT: a `dlV` disk label must be present before we go scanning.
+        if !has_next_label(reader) {
+            return Err(FilesystemError::Parse("no UFS superblock found".into()));
+        }
+
+        // Superblocks are block-aligned (multiples of 8192). Scan the first
+        // 32 MiB; that comfortably covers every NeXT/OpenStep/Rhapsody layout.
+        const SCAN_LIMIT: u64 = 32 * 1024 * 1024;
+        let mut best: Option<(Vec<u8>, bool, u64, usize)> = None;
+        let mut off = SB_OFFSET_UFS1;
+        while off < SCAN_LIMIT {
+            if let Some((sb, be, magic)) = read_sb_magic(reader, off) {
+                if magic == MAGIC_UFS1 {
+                    let base = off - SB_OFFSET_UFS1;
+                    let count = root_entry_count(reader, base, &sb, be);
+                    if count > 0 && best.as_ref().is_none_or(|b| count > b.3) {
+                        best = Some((sb, be, base, count));
+                    }
+                }
+            }
+            off += SB_OFFSET_UFS1;
+        }
+        match best {
+            Some((sb, be, base, _)) => Ok((sb, be, base)),
+            None => Err(FilesystemError::Parse(
+                "NeXT disk label found but no populated UFS partition".into(),
+            )),
+        }
     }
 
     // ── low-level readers ──────────────────────────────────────────────────
@@ -240,7 +270,7 @@ impl UfsFilesystem {
         let cg = (ino / self.ipg) as i64;
         let iic = ino % self.ipg;
         let fragaddr = self.cgimin(cg) as u64 + (iic / self.inopb) * self.frag;
-        let byte = fragaddr * self.fsize + (iic % self.inopb) * DINODE1_SIZE;
+        let byte = self.base_offset + fragaddr * self.fsize + (iic % self.inopb) * DINODE1_SIZE;
         let raw = self
             .reader
             .read_bytes(byte, DINODE1_SIZE as usize)
@@ -277,7 +307,7 @@ impl UfsFilesystem {
         }
         let block = self
             .reader
-            .read_bytes(fragaddr * self.fsize, self.bsize as usize)
+            .read_bytes(self.base_offset + fragaddr * self.fsize, self.bsize as usize)
             .map_err(sector_to_fs_err)?;
         let mut out = Vec::with_capacity(self.nindir as usize);
         for i in 0..self.nindir as usize {
@@ -331,7 +361,7 @@ impl UfsFilesystem {
             } else {
                 let chunk = self
                     .reader
-                    .read_bytes(frag * self.fsize + within, take as usize)
+                    .read_bytes(self.base_offset + frag * self.fsize + within, take as usize)
                     .map_err(sector_to_fs_err)?;
                 out.extend_from_slice(&chunk);
             }
@@ -422,12 +452,17 @@ impl Filesystem for UfsFilesystem {
                 let mut d = FileEntry::new_directory(name, path, ino);
                 d.size = child.size;
                 d
-            } else {
+            } else if child.is_symlink() {
                 let mut f = FileEntry::new_file(name, path, child.size, ino);
-                if child.is_symlink() {
-                    f.symlink_target = self.symlink_target(&child);
-                }
+                f.symlink_target = self.symlink_target(&child);
                 f
+            } else if child.is_regular() {
+                FileEntry::new_file(name, path, child.size, ino)
+            } else {
+                // Device node, FIFO, or socket: no data blocks (di_size / the
+                // block-pointer area hold rdev, not file content). Surface it as
+                // an empty file so it lists but never triggers a bogus block read.
+                FileEntry::new_file(name, path, 0, ino)
             };
             fe.location = ino;
             entries.push(fe);
@@ -446,6 +481,11 @@ impl Filesystem for UfsFilesystem {
             return Err(FilesystemError::NotADirectory(entry.path.clone()));
         }
         let dn = self.read_dinode(entry.location)?;
+        if !dn.is_regular() {
+            // Symlinks expose their target via `symlink_target`; device/FIFO/
+            // socket inodes have no readable content.
+            return Ok(Vec::new());
+        }
         self.read_whole(&dn)
     }
 
@@ -459,6 +499,9 @@ impl Filesystem for UfsFilesystem {
             return Err(FilesystemError::NotADirectory(entry.path.clone()));
         }
         let dn = self.read_dinode(entry.location)?;
+        if !dn.is_regular() {
+            return Ok(Vec::new());
+        }
         self.read_range(&dn, offset, length as u64)
     }
 
@@ -489,18 +532,187 @@ fn sector_to_fs_err(e: crate::error::OpticaldiscsError) -> FilesystemError {
 
 // ── Detection helper ────────────────────────────────────────────────────────────
 
-/// Probe for a UFS1 superblock at the standard offset. Returns `true` if a UFS1
-/// magic is present in either byte order. (UFS2 is intentionally not reported
-/// here — it is unsupported by the browser.)
-pub(crate) fn detect_ufs(reader: &mut dyn SectorReader) -> bool {
-    let sb = match reader.read_bytes(SB_OFFSET_UFS1, MAGIC_OFF + 4) {
-        Ok(b) if b.len() >= MAGIC_OFF + 4 => b,
-        _ => return false,
-    };
+/// Read the superblock candidate at byte offset `off`. Returns
+/// `(sb_bytes, big_endian, magic)` if a UFS1/UFS2 magic is present in either
+/// byte order.
+fn read_sb_magic(reader: &mut dyn SectorReader, off: u64) -> Option<(Vec<u8>, bool, u32)> {
+    let sb = reader.read_bytes(off, SB_READ_SIZE).ok()?;
+    if sb.len() < SB_READ_SIZE {
+        return None;
+    }
     let m = &sb[MAGIC_OFF..MAGIC_OFF + 4];
     let le = u32::from_le_bytes([m[0], m[1], m[2], m[3]]);
     let be = u32::from_be_bytes([m[0], m[1], m[2], m[3]]);
-    le == MAGIC_UFS1 || be == MAGIC_UFS1
+    if le == MAGIC_UFS1 || le == MAGIC_UFS2 {
+        Some((sb, false, le))
+    } else if be == MAGIC_UFS1 || be == MAGIC_UFS2 {
+        Some((sb, true, be))
+    } else {
+        None
+    }
+}
+
+/// True if a NeXT `dlV` disk label is present at the front of the image (offset
+/// 0 or block 4). NeXT / OpenStep / Rhapsody discs wrap their FFS in one.
+fn has_next_label(reader: &mut dyn SectorReader) -> bool {
+    for &off in &[0u64, 8192] {
+        if let Ok(b) = reader.read_bytes(off, 4) {
+            if b.len() >= 3 && &b[0..3] == b"dlV" {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Numeric geometry fields needed to locate the root inode of a candidate
+/// partition during scanning.
+struct SbGeom {
+    bsize: u64,
+    fsize: u64,
+    frag: u64,
+    ipg: u64,
+    fpg: u64,
+    iblkno: i64,
+    cgoffset: i64,
+    cgmask: i64,
+    inopb: u64,
+    old_dirfmt: bool,
+}
+
+impl SbGeom {
+    fn parse(sb: &[u8], be: bool) -> Option<Self> {
+        let ri = |o: usize| -> i64 {
+            let b = [sb[o], sb[o + 1], sb[o + 2], sb[o + 3]];
+            if be {
+                i32::from_be_bytes(b) as i64
+            } else {
+                i32::from_le_bytes(b) as i64
+            }
+        };
+        let ru = |o: usize| -> u64 {
+            let b = [sb[o], sb[o + 1], sb[o + 2], sb[o + 3]];
+            if be {
+                u32::from_be_bytes(b) as u64
+            } else {
+                u32::from_le_bytes(b) as u64
+            }
+        };
+        let bsize = ri(OFF_BSIZE) as u64;
+        let fsize = ri(OFF_FSIZE) as u64;
+        let frag = ri(OFF_FRAG) as u64;
+        let ipg = ru(OFF_IPG);
+        let fpg = ri(OFF_FPG) as u64;
+        if bsize == 0 || fsize == 0 || frag == 0 || ipg == 0 || fpg == 0 {
+            return None;
+        }
+        Some(Self {
+            bsize,
+            fsize,
+            frag,
+            ipg,
+            fpg,
+            iblkno: ri(OFF_IBLKNO),
+            cgoffset: ri(OFF_CGOFFSET),
+            cgmask: ri(OFF_CGMASK),
+            inopb: bsize / DINODE1_SIZE,
+            old_dirfmt: ri(OFF_MAXSYMLINKLEN) <= 0,
+        })
+    }
+}
+
+/// Count the real directory entries (excluding `.`/`..`) in the root inode of
+/// the candidate partition based at `base`. Zero means "not a valid populated
+/// root" — used to pick the true root filesystem among several NeXT partitions.
+fn root_entry_count(reader: &mut dyn SectorReader, base: u64, sb: &[u8], be: bool) -> usize {
+    let g = match SbGeom::parse(sb, be) {
+        Some(g) => g,
+        None => return 0,
+    };
+    let rd_u = |b: &[u8], o: usize| -> u64 {
+        let v = [b[o], b[o + 1], b[o + 2], b[o + 3]];
+        if be {
+            u32::from_be_bytes(v) as u64
+        } else {
+            u32::from_le_bytes(v) as u64
+        }
+    };
+    let rd_u16 = |b: &[u8], o: usize| -> u16 {
+        let v = [b[o], b[o + 1]];
+        if be {
+            u16::from_be_bytes(v)
+        } else {
+            u16::from_le_bytes(v)
+        }
+    };
+    let rd_u64 = |b: &[u8], o: usize| -> u64 {
+        let mut v = [0u8; 8];
+        v.copy_from_slice(&b[o..o + 8]);
+        if be {
+            u64::from_be_bytes(v)
+        } else {
+            u64::from_le_bytes(v)
+        }
+    };
+
+    let cg = (ROOT_INODE / g.ipg) as i64;
+    let iic = ROOT_INODE % g.ipg;
+    let cgimin = g.fpg as i64 * cg + g.cgoffset * (cg & !g.cgmask) + g.iblkno;
+    let fragaddr = cgimin as u64 + (iic / g.inopb) * g.frag;
+    let byte = base + fragaddr * g.fsize + (iic % g.inopb) * DINODE1_SIZE;
+    let raw = match reader.read_bytes(byte, DINODE1_SIZE as usize) {
+        Ok(b) if b.len() >= DINODE1_SIZE as usize => b,
+        _ => return 0,
+    };
+    if (rd_u16(&raw, D1_OFF_MODE) & S_IFMT) != S_IFDIR {
+        return 0;
+    }
+    let size = rd_u64(&raw, D1_OFF_SIZE);
+    let db0 = rd_u(&raw, D1_OFF_DB);
+    if size == 0 || db0 == 0 {
+        return 0;
+    }
+    let want = size.min(g.bsize) as usize;
+    let data = match reader.read_bytes(base + db0 * g.fsize, want) {
+        Ok(b) => b,
+        _ => return 0,
+    };
+    let mut cnt = 0;
+    let mut off = 0usize;
+    while off + 8 <= data.len() {
+        let dino = rd_u(&data, off);
+        let reclen = rd_u16(&data, off + 4) as usize;
+        if reclen < 8 || off + reclen > data.len() {
+            break;
+        }
+        if dino != 0 {
+            let namlen = if g.old_dirfmt {
+                rd_u16(&data, off + 6) as usize
+            } else {
+                data[off + 7] as usize
+            };
+            if off + 8 + namlen <= data.len() {
+                let name = &data[off + 8..off + 8 + namlen];
+                if name != b"." && name != b".." && !name.is_empty() {
+                    cnt += 1;
+                }
+            }
+        }
+        off += reclen;
+    }
+    cnt
+}
+
+/// Probe for a browsable UFS1 filesystem: a whole-disc UFS1 superblock at the
+/// standard offset, or a NeXT disk label wrapping an FFS. (UFS2 is intentionally
+/// not reported — it is unsupported by the browser.)
+pub(crate) fn detect_ufs(reader: &mut dyn SectorReader) -> bool {
+    if let Some((_, _, magic)) = read_sb_magic(reader, SB_OFFSET_UFS1) {
+        if magic == MAGIC_UFS1 {
+            return true;
+        }
+    }
+    has_next_label(reader)
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -513,6 +725,7 @@ mod tests {
     fn dir_parser(big_endian: bool, old_dirfmt: bool) -> UfsFilesystem {
         UfsFilesystem {
             reader: Box::new(NullReader),
+            base_offset: 0,
             big_endian,
             bsize: 8192,
             fsize: 1024,
