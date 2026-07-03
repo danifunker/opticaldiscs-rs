@@ -19,6 +19,17 @@ pub const RAW_SECTOR_SIZE: u64 = 2352;
 /// Byte offset to user data within a raw Mode 1 sector.
 pub const MODE1_DATA_OFFSET: u64 = 16;
 
+/// Byte offset to user data within a raw Mode 2 (Form 1, XA) sector.
+///
+/// Mode 2 sectors carry an 8-byte subheader after the 16-byte sync+header,
+/// so the 2048-byte user area starts at offset 24.
+pub const MODE2_DATA_OFFSET: u64 = 24;
+
+/// 12-byte sync pattern that begins every raw (2352-byte) CD sector.
+const RAW_SYNC: [u8; 12] = [
+    0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x00,
+];
+
 /// Abstraction over different disc image containers.
 ///
 /// Implementations always return 2048-byte cooked sectors — the raw sector
@@ -54,27 +65,60 @@ pub trait SectorReader: Send {
 
 // ── Phase 2: IsoSectorReader ──────────────────────────────────────────────────
 
-/// `SectorReader` for plain `.iso` / `.toast` files.
+/// `SectorReader` for plain `.iso` / `.toast` files, **and** for bare `.iso`
+/// files that are actually raw 2352-byte-sector dumps.
 ///
-/// Sectors are stored consecutively as 2048-byte cooked data with no headers,
-/// so `read_bytes` is overridden to use a single seek+read.
+/// Most `.iso` files store sectors consecutively as 2048-byte cooked data with
+/// no headers, so `read_bytes` uses a single seek+read. Some dumps (often from
+/// CD-burning tools that saved the full raw sector) instead store 2352-byte raw
+/// sectors — recognisable by the 12-byte sync pattern `00 FF×10 00` at offset 0.
+/// [`IsoSectorReader::new`] auto-detects this and transparently strips the raw
+/// sync+header (+ Mode 2 subheader) so callers still see a 2048-byte cooked view.
 pub struct IsoSectorReader {
     file: BufReader<File>,
+    /// Physical bytes per sector in the file: 2048 (cooked) or 2352 (raw).
+    physical_sector_size: u64,
+    /// Byte offset within each physical sector to the start of user data:
+    /// 0 (cooked), 16 (raw Mode 1), or 24 (raw Mode 2 Form 1).
+    data_offset: u64,
 }
 
 impl IsoSectorReader {
-    /// Open an ISO image file for reading.
+    /// Open an ISO image file for reading, auto-detecting raw 2352-byte layout.
     pub fn new(path: impl AsRef<Path>) -> Result<Self> {
-        let file = File::open(path.as_ref()).map_err(OpticaldiscsError::Io)?;
+        let mut file = BufReader::new(File::open(path.as_ref()).map_err(OpticaldiscsError::Io)?);
+
+        // Sniff the first 16 bytes for the raw-sector sync pattern.
+        let mut head = [0u8; 16];
+        let (physical_sector_size, data_offset) = match file.read_exact(&mut head) {
+            Ok(()) if head[..12] == RAW_SYNC => {
+                // Byte 15 is the mode byte (after the 3-byte MSF address).
+                let data_offset = match head[15] {
+                    2 => MODE2_DATA_OFFSET,
+                    _ => MODE1_DATA_OFFSET, // Mode 1 (and unknown → treat as Mode 1)
+                };
+                (RAW_SECTOR_SIZE, data_offset)
+            }
+            _ => (SECTOR_SIZE, 0),
+        };
+        file.seek(SeekFrom::Start(0)).map_err(OpticaldiscsError::Io)?;
+
         Ok(Self {
-            file: BufReader::new(file),
+            file,
+            physical_sector_size,
+            data_offset,
         })
+    }
+
+    /// True if this image is stored as raw 2352-byte sectors.
+    fn is_raw(&self) -> bool {
+        self.physical_sector_size != SECTOR_SIZE
     }
 }
 
 impl SectorReader for IsoSectorReader {
     fn read_sector(&mut self, lba: u64) -> Result<Vec<u8>> {
-        let offset = lba * SECTOR_SIZE;
+        let offset = lba * self.physical_sector_size + self.data_offset;
         self.file
             .seek(SeekFrom::Start(offset))
             .map_err(OpticaldiscsError::Io)?;
@@ -85,8 +129,29 @@ impl SectorReader for IsoSectorReader {
         Ok(buf)
     }
 
-    /// Optimised override: direct seek+read avoids sector-at-a-time looping.
+    /// Cooked images use an optimised direct seek+read; raw images fall back to
+    /// sector-at-a-time composition (the default impl) so the per-sector
+    /// sync+header gaps are stripped correctly.
     fn read_bytes(&mut self, byte_offset: u64, length: usize) -> Result<Vec<u8>> {
+        if self.is_raw() {
+            // Sector-composed read (mirrors the trait default) to skip gaps.
+            let sector_lba = byte_offset / SECTOR_SIZE;
+            let sector_off = (byte_offset % SECTOR_SIZE) as usize;
+            let mut out = Vec::with_capacity(length);
+            let mut remaining = length;
+            let mut lba = sector_lba;
+            let mut offset = sector_off;
+            while remaining > 0 {
+                let sector = self.read_sector(lba)?;
+                let available = sector.len().saturating_sub(offset);
+                let take = remaining.min(available);
+                out.extend_from_slice(&sector[offset..offset + take]);
+                remaining -= take;
+                lba += 1;
+                offset = 0;
+            }
+            return Ok(out);
+        }
         self.file
             .seek(SeekFrom::Start(byte_offset))
             .map_err(OpticaldiscsError::Io)?;
@@ -215,5 +280,90 @@ impl SectorReader for ChdSectorReader {
             .read_exact(&mut buf)
             .map_err(OpticaldiscsError::Io)?;
         Ok(buf)
+    }
+}
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    /// Build one raw 2352-byte sector carrying `data` as its cooked payload.
+    fn raw_sector(mode: u8, data: &[u8]) -> Vec<u8> {
+        let mut s = vec![0u8; RAW_SECTOR_SIZE as usize];
+        s[..12].copy_from_slice(&RAW_SYNC);
+        s[15] = mode;
+        let off = if mode == 2 {
+            MODE2_DATA_OFFSET
+        } else {
+            MODE1_DATA_OFFSET
+        } as usize;
+        let n = data.len().min(SECTOR_SIZE as usize);
+        s[off..off + n].copy_from_slice(&data[..n]);
+        s
+    }
+
+    fn write_tmp_iso(bytes: &[u8]) -> tempfile::NamedTempFile {
+        let mut f = tempfile::Builder::new().suffix(".iso").tempfile().unwrap();
+        f.write_all(bytes).unwrap();
+        f.flush().unwrap();
+        f
+    }
+
+    /// A cooked `.iso` is read at 2048-byte stride with no offset.
+    #[test]
+    fn cooked_iso_reads_directly() {
+        let mut img = vec![0u8; 18 * SECTOR_SIZE as usize];
+        // Marker at start of cooked sector 16.
+        let off = 16 * SECTOR_SIZE as usize;
+        img[off..off + 5].copy_from_slice(b"CD001");
+        let f = write_tmp_iso(&img);
+        let mut r = IsoSectorReader::new(f.path()).unwrap();
+        assert!(!r.is_raw());
+        assert_eq!(&r.read_sector(16).unwrap()[..5], b"CD001");
+        assert_eq!(&r.read_bytes(16 * SECTOR_SIZE, 5).unwrap(), b"CD001");
+    }
+
+    /// A raw 2352-byte Mode 1 `.iso` is auto-detected and the sync/header
+    /// stripped so callers still see cooked 2048-byte sectors.
+    #[test]
+    fn raw_mode1_iso_is_detected_and_stripped() {
+        let mut sectors: Vec<u8> = Vec::new();
+        for lba in 0..18u8 {
+            let mut data = vec![0u8; SECTOR_SIZE as usize];
+            if lba == 16 {
+                data[..5].copy_from_slice(b"CD001");
+                data[100..105].copy_from_slice(b"HELLO");
+            }
+            sectors.extend_from_slice(&raw_sector(1, &data));
+        }
+        let f = write_tmp_iso(&sectors);
+        let mut r = IsoSectorReader::new(f.path()).unwrap();
+        assert!(r.is_raw());
+        assert_eq!(r.physical_sector_size, RAW_SECTOR_SIZE);
+        assert_eq!(r.data_offset, MODE1_DATA_OFFSET);
+        assert_eq!(&r.read_sector(16).unwrap()[..5], b"CD001");
+        // read_bytes must compose across the raw sector gaps correctly.
+        assert_eq!(&r.read_bytes(16 * SECTOR_SIZE + 100, 5).unwrap(), b"HELLO");
+    }
+
+    /// Mode 2 raw sectors put user data at offset 24.
+    #[test]
+    fn raw_mode2_iso_uses_offset_24() {
+        let mut sectors: Vec<u8> = Vec::new();
+        for lba in 0..18u8 {
+            let mut data = vec![0u8; SECTOR_SIZE as usize];
+            if lba == 16 {
+                data[..5].copy_from_slice(b"CD001");
+            }
+            sectors.extend_from_slice(&raw_sector(2, &data));
+        }
+        let f = write_tmp_iso(&sectors);
+        let mut r = IsoSectorReader::new(f.path()).unwrap();
+        assert!(r.is_raw());
+        assert_eq!(r.data_offset, MODE2_DATA_OFFSET);
+        assert_eq!(&r.read_sector(16).unwrap()[..5], b"CD001");
     }
 }
