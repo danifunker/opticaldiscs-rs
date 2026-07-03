@@ -1,6 +1,6 @@
 [package]
 name = "opticaldiscs"
-version = "0.6.0"
+version = "0.7.0"
 edition = "2021"
 license = "GPL-3.0"
 description = "Format-agnostic optical disc image reading and filesystem browsing (ISO, BIN/CUE, CHD)"

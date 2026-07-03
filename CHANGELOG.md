@@ -3,6 +3,34 @@
 All notable changes to this crate are documented here. This project follows
 [Semantic Versioning](https://semver.org/).
 
+## 0.7.0
+
+> **⚠️ Breaking change.** `FilesystemType` gained new variants (`HighSierra`,
+> `Ufs`, `Ods2`). Code that exhaustively matches `FilesystemType` must handle
+> them (or add a wildcard arm).
+
+### Added
+
+- **High Sierra Format** (the pre-ISO 9660 1986 CD-ROM filesystem, `CDROM`
+  identifier). `PrimaryVolumeDescriptor::parse` auto-detects it and reads the
+  High-Sierra field offsets; the ISO 9660 browser handles its directory records
+  (file flags at offset 24). New `FilesystemType::HighSierra`.
+- **Raw 2352-byte-sector auto-detection** in a bare `.iso`. `IsoSectorReader`
+  recognises the `00 FF…FF 00` sync header and transparently strips the raw
+  sync/header (Mode 1 and Mode 2 Form 1), so raw dumps saved with an `.iso`
+  extension browse through the normal ISO/Joliet/Rock Ridge reader.
+- **UFS1 / FFS browser** (`browse/ufs.rs`, `FilesystemType::Ufs`) for BSD Fast
+  File System discs: Digital UNIX / Tru64 (little-endian) and SunOS/Solaris
+  (big-endian), endianness auto-detected from the superblock. Cylinder-group
+  inode location, direct + single/double/triple-indirect blocks, the pre-4.4
+  (OFSFMT) directory format, symlink targets, and special-inode handling. Also
+  reads **NeXTSTEP / OpenStep / Rhapsody** FFS wrapped in a `dlV` disk label
+  (partition base auto-located; NeXT keeps big-endian FFS even on Intel).
+- **VMS ODS-2 / Files-11 browser** (`browse/ods2.rs`, `FilesystemType::Ods2`)
+  for OpenVMS (VAX/Alpha) discs: home block → index-file headers → retrieval
+  pointers (formats 1/2/3) → file data; directory records resolve name+version
+  to File-IDs. VMS `;version` suffixes preserved.
+
 ## 0.6.0 — Unreleased
 
 > **⚠️ Breaking change — action required.** `FileEntry` gained two new public

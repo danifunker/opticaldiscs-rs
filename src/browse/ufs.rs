@@ -307,7 +307,10 @@ impl UfsFilesystem {
         }
         let block = self
             .reader
-            .read_bytes(self.base_offset + fragaddr * self.fsize, self.bsize as usize)
+            .read_bytes(
+                self.base_offset + fragaddr * self.fsize,
+                self.bsize as usize,
+            )
             .map_err(sector_to_fs_err)?;
         let mut out = Vec::with_capacity(self.nindir as usize);
         for i in 0..self.nindir as usize {
@@ -344,7 +347,12 @@ impl UfsFilesystem {
 
     /// Read `[start, start+len)` of the file/directory at inode `dn`, honouring
     /// sparse holes and the true `di_size`.
-    fn read_range(&mut self, dn: &Dinode, start: u64, len: u64) -> Result<Vec<u8>, FilesystemError> {
+    fn read_range(
+        &mut self,
+        dn: &Dinode,
+        start: u64,
+        len: u64,
+    ) -> Result<Vec<u8>, FilesystemError> {
         let end = (start + len).min(dn.size);
         if start >= end {
             return Ok(Vec::new());
@@ -404,7 +412,8 @@ impl UfsFilesystem {
                     data[off + 7] as usize
                 };
                 if off + 8 + namlen <= data.len() {
-                    let name = String::from_utf8_lossy(&data[off + 8..off + 8 + namlen]).into_owned();
+                    let name =
+                        String::from_utf8_lossy(&data[off + 8..off + 8 + namlen]).into_owned();
                     if name != "." && name != ".." && !name.is_empty() {
                         out.push((ino, name));
                     }
@@ -505,7 +514,10 @@ impl Filesystem for UfsFilesystem {
         self.read_range(&dn, offset, length as u64)
     }
 
-    fn read_resource_fork(&mut self, _entry: &FileEntry) -> Result<Option<Vec<u8>>, FilesystemError> {
+    fn read_resource_fork(
+        &mut self,
+        _entry: &FileEntry,
+    ) -> Result<Option<Vec<u8>>, FilesystemError> {
         Ok(None)
     }
 
@@ -779,7 +791,10 @@ mod tests {
         let entries = fs.parse_dir(&data);
         assert_eq!(
             entries,
-            vec![(64, "DOCUMENTATION".to_string()), (100, "vmunix".to_string())]
+            vec![
+                (64, "DOCUMENTATION".to_string()),
+                (100, "vmunix".to_string())
+            ]
         );
     }
 

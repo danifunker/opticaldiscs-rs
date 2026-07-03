@@ -948,7 +948,7 @@ mod tests {
         let lab = label.as_bytes();
         s[48..48 + lab.len()].copy_from_slice(lab);
         s[136..138].copy_from_slice(&2048u16.to_le_bytes()); // logical block size
-        // Root directory record at offset 180 (flags at HSF offset 24).
+                                                             // Root directory record at offset 180 (flags at HSF offset 24).
         let r = &mut s[180..214];
         r[0] = 34;
         r[2..6].copy_from_slice(&root_lba.to_le_bytes());

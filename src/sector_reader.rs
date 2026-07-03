@@ -101,7 +101,8 @@ impl IsoSectorReader {
             }
             _ => (SECTOR_SIZE, 0),
         };
-        file.seek(SeekFrom::Start(0)).map_err(OpticaldiscsError::Io)?;
+        file.seek(SeekFrom::Start(0))
+            .map_err(OpticaldiscsError::Io)?;
 
         Ok(Self {
             file,

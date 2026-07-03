@@ -51,8 +51,12 @@ for the full list of supported targets, glibc floors, and escape hatches.
 | Joliet (Unicode long names) | ✓ (since 0.6.0) |
 | Rock Ridge / SUSP (POSIX metadata, long names, symlinks, timestamps) | ✓ (since 0.6.0) |
 | Per-file timestamps + POSIX ownership on `FileEntry` (all filesystems) | ✓ (since 0.6.0) |
+| High Sierra Format browser (pre-ISO 9660 `CDROM` discs) | ✓ (since 0.7.0) |
+| Raw 2352-byte-sector auto-detect in a bare `.iso` | ✓ (since 0.7.0) |
 | HFS / HFS+ filesystem browser | ✓ |
 | SGI Volume Header + EFS filesystem browser (IRIX CDs) | ✓ (since 0.3.0) |
+| UFS1 / FFS browser — Digital UNIX/Tru64, SunOS; NeXT/OpenStep/Rhapsody | ✓ (since 0.7.0) |
+| VMS ODS-2 / Files-11 browser (OpenVMS VAX/Alpha) | ✓ (since 0.7.0) |
 | TOC + MusicBrainz/FreeDB DiscID | ✓ (`toc` feature) |
 | Physical optical drive enumeration | ✓ (`drives` feature) |
 
