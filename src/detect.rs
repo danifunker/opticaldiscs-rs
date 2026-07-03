@@ -601,6 +601,11 @@ pub(crate) fn probe_filesystem(
         }
     }
 
+    // ── Try UFS1 (BSD FFS) — Digital UNIX / Tru64, SunOS/Solaris CDs ─────────
+    if crate::browse::ufs::detect_ufs(reader) {
+        return Ok((FilesystemType::Ufs, None));
+    }
+
     Ok((FilesystemType::Unknown, None))
 }
 

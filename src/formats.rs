@@ -73,6 +73,8 @@ pub enum FilesystemType {
     HfsPlus,
     /// SGI EFS (Extent File System) — IRIX install/distribution CDs.
     Efs,
+    /// UFS / FFS (BSD Fast File System) — Digital UNIX / Tru64, SunOS/Solaris CDs.
+    Ufs,
     /// Could not be determined.
     Unknown,
 }
@@ -88,6 +90,7 @@ impl FilesystemType {
             Self::Hfs => "HFS",
             Self::HfsPlus => "HFS+",
             Self::Efs => "EFS",
+            Self::Ufs => "UFS",
             Self::Unknown => "Unknown",
         }
     }
@@ -96,7 +99,7 @@ impl FilesystemType {
     pub fn is_browsable(self) -> bool {
         matches!(
             self,
-            Self::Iso9660 | Self::HighSierra | Self::Hfs | Self::HfsPlus | Self::Efs
+            Self::Iso9660 | Self::HighSierra | Self::Hfs | Self::HfsPlus | Self::Efs | Self::Ufs
         )
     }
 }

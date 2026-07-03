@@ -21,7 +21,11 @@ pub mod mac_alias;
 // SGI EFS
 pub mod efs;
 
+// BSD UFS / FFS
+pub mod ufs;
+
 pub use efs::EfsFilesystem;
+pub use ufs::UfsFilesystem;
 pub use entry::{EntryType, FileEntry};
 pub use filesystem::{Filesystem, FilesystemError};
 pub use hfs::HfsFilesystem;
@@ -68,6 +72,8 @@ pub fn open_disc_filesystem(info: &DiscImageInfo) -> Result<Box<dyn Filesystem>,
             })?;
             Ok(Box::new(EfsFilesystem::new(reader, partition_offset)?))
         }
+
+        FilesystemType::Ufs => Ok(Box::new(UfsFilesystem::new(reader)?)),
 
         FilesystemType::Hfs | FilesystemType::HfsPlus => {
             // Use resolve_apple_hfs to get the correct offset — this handles
