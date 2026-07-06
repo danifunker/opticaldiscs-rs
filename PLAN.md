@@ -514,7 +514,10 @@ if the repo will be public, or keep them in a separate `test-fixtures` branch.
 
 ---
 
-*Last updated: 2026-06-30.*
-*All phases (0–9) are complete and shipped (current release `0.4.5` on crates.io);
+*Last updated: 2026-07-05.*
+*All phases (0–9) are complete and shipped (current release `0.7.0`);
 EFS / SGI support landed as `0.3.0` (see [docs/EFS_Implementation.md](docs/EFS_Implementation.md)).
-Future versions may add UDF support, MDS/MDF format, and Blu-ray metadata.*
+UDF support (physical-partition layout, UDF 1.02–2.01: DVDs, DVD-Video, data discs)
+landed as `0.7.0`. Future versions may add UDF 2.50+ metadata-partition support
+(Blu-ray / UDF Bridge metadata discs — currently detected but not yet browsable),
+the MDS/MDF format, and Blu-ray metadata.*
