@@ -149,6 +149,17 @@ fn open_sector_reader(info: &DiscImageInfo) -> Result<Box<dyn SectorReader>, Fil
 
         DiscFormat::Chd => {
             let chd_info = crate::chd::open_chd(path).map_err(disc_err)?;
+            // Dreamcast GD-ROM: select the high-density game track and wrap it so
+            // the ISO 9660 browser sees the HD-area volume (see GdromSectorReader).
+            if chd_info.is_gdrom() {
+                if let Some(hd) = chd_info.find_gdrom_hd_track() {
+                    let inner =
+                        crate::sector_reader::ChdSectorReader::open(path, hd).map_err(disc_err)?;
+                    return Ok(Box::new(crate::sector_reader::GdromSectorReader::new(
+                        Box::new(inner),
+                    )));
+                }
+            }
             let track = chd_info
                 .find_first_data_track()
                 .ok_or(FilesystemError::Unsupported)?
@@ -158,9 +169,9 @@ fn open_sector_reader(info: &DiscImageInfo) -> Result<Box<dyn SectorReader>, Fil
             Ok(Box::new(reader))
         }
 
-        DiscFormat::Gdi | DiscFormat::Nintendo | DiscFormat::MdsMdf => {
-            Err(FilesystemError::Unsupported)
-        }
+        DiscFormat::Gdi => crate::gdi::open_gdi_hd_reader(path).map_err(disc_err),
+
+        DiscFormat::Nintendo | DiscFormat::MdsMdf => Err(FilesystemError::Unsupported),
     }
 }
 

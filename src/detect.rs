@@ -171,9 +171,7 @@ impl DiscImageInfo {
                     path.display()
                 ))
             }),
-            DiscFormat::Gdi => Err(OpticaldiscsError::UnsupportedFormat(
-                "GDI (Dreamcast) browsing is not yet implemented".into(),
-            )),
+            DiscFormat::Gdi => Self::probe_gdi(path),
             DiscFormat::MdsMdf => Err(OpticaldiscsError::UnsupportedFormat(
                 "MDS/MDF is not supported".into(),
             )),
@@ -289,6 +287,18 @@ impl DiscImageInfo {
         )
     }
 
+    /// Probe a Dreamcast `.gdi` disc, browsing its high-density game track.
+    fn probe_gdi(path: &Path) -> Result<Self> {
+        let mut reader = crate::gdi::open_gdi_hd_reader(path)?;
+        Self::build(
+            path,
+            DiscFormat::Gdi,
+            reader.as_mut(),
+            #[cfg(feature = "toc")]
+            None,
+        )
+    }
+
     /// Probe a plain `.iso` file.
     fn probe_iso(path: &Path) -> Result<Self> {
         let mut reader = IsoSectorReader::new(path)?;
@@ -332,6 +342,22 @@ impl DiscImageInfo {
                 });
             }
         };
+
+        // Dreamcast GD-ROM: browse the high-density game track (track 3+ at
+        // frame 45000) through a GdromSectorReader that rebases absolute LBAs.
+        if chd_info.is_gdrom() {
+            if let Some(hd) = chd_info.find_gdrom_hd_track() {
+                let inner = ChdSectorReader::open(path, hd)?;
+                let mut reader = crate::sector_reader::GdromSectorReader::new(Box::new(inner));
+                return Self::build(
+                    path,
+                    DiscFormat::Chd,
+                    &mut reader,
+                    #[cfg(feature = "toc")]
+                    toc,
+                );
+            }
+        }
 
         let mut reader = ChdSectorReader::open(path, &data_track)?;
         Self::build(

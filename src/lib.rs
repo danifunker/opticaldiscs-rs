@@ -61,6 +61,9 @@ pub mod detect;
 // Game-disc identification (see docs/GameDiscs_Implementation.md)
 pub mod gameid;
 
+// Dreamcast GD-ROM .gdi container
+pub mod gdi;
+
 // Phase 7 (HFS metadata — not browsing, see browse/)
 pub mod apm;
 pub mod hfs;
