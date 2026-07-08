@@ -180,7 +180,18 @@ pub fn detect_game_disc(
         });
     }
 
-    // 4. ISO 9660 content probes (need a PVD).
+    // 4. ISO 9660 content probes (need a PVD). PlayStation 2 DVDs are a
+    //    UDF + ISO 9660 bridge, so the caller may hand us `None` (UDF was
+    //    detected first) even though an ISO PVD is present — parse it directly
+    //    in that case so SYSTEM.CNF is still reachable.
+    let parsed_pvd;
+    let pvd = match pvd {
+        Some(p) => Some(p),
+        None => {
+            parsed_pvd = PrimaryVolumeDescriptor::read_from(reader).ok();
+            parsed_pvd.as_ref()
+        }
+    };
     if let Some(pvd) = pvd {
         // Amiga CD32 / CDTV: PVD system identifier begins with "CDTV".
         if pvd.system_id.trim_start().starts_with("CDTV") {
@@ -672,6 +683,27 @@ mod tests {
         assert_eq!(info.console, Console::Ps2);
         assert_eq!(info.serial.as_deref(), Some("SLES-21629"));
         assert_eq!(info.region, Some(Region::Pal));
+    }
+
+    #[test]
+    fn detects_ps2_dvd_without_pvd() {
+        // PS2 DVDs are a UDF+ISO bridge; the caller passes pvd=None (UDF was
+        // detected first). gameid must still parse the ISO PVD to find BOOT2.
+        let (mut img, pvd) =
+            build_iso_with_file("SYSTEM.CNF", b"BOOT2 = cdrom0:\\SLPM_651.40;1\r\n");
+        // Write a real PVD at sector 16 so the fallback parse succeeds.
+        let pvd_sector = crate::iso9660::build_test_pvd_sector(
+            "PS2GAME",
+            pvd.root_directory_lba,
+            pvd.root_directory_size,
+        );
+        let off = 16 * SECTOR_SIZE as usize;
+        img[off..off + pvd_sector.len()].copy_from_slice(&pvd_sector);
+        let mut r = CursorReader(Cursor::new(img));
+
+        let info = detect_game_disc(&mut r, None).unwrap();
+        assert_eq!(info.console, Console::Ps2);
+        assert_eq!(info.serial.as_deref(), Some("SLPM-65140"));
     }
 
     #[test]
