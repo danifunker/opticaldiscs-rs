@@ -3,7 +3,7 @@
 All notable changes to this crate are documented here. This project follows
 [Semantic Versioning](https://semver.org/).
 
-## 0.8.0 (unreleased)
+## 0.8.0
 
 > **⚠️ Breaking change.** `DiscFormat` gained `Gdi` and `Nintendo`; `FilesystemType`
 > gained `GameCube`, `Wii`, `Cdi`, and `Opera`. Code that exhaustively matches
