@@ -58,6 +58,9 @@ pub mod toc;
 // Phase 6
 pub mod detect;
 
+// Game-disc identification (see docs/GameDiscs_Implementation.md)
+pub mod gameid;
+
 // Phase 7 (HFS metadata — not browsing, see browse/)
 pub mod apm;
 pub mod hfs;
@@ -94,6 +97,9 @@ pub use sector_reader::BinCueSectorReader;
 
 // Phase 4
 pub use sector_reader::ChdSectorReader;
+
+// Game-disc identification
+pub use gameid::{Console, GameDiscInfo, Region};
 
 // Phase 8
 pub use hfs::MasterDirectoryBlock;

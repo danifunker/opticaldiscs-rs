@@ -128,6 +128,11 @@ pub struct DiscImageInfo {
     /// Byte offset of the EFS partition within the disc, if the filesystem
     /// is EFS. Used by browsers to locate the superblock and inodes.
     pub efs_partition_offset: Option<u64>,
+    /// Video-game console identity, if the disc is a recognized game disc.
+    ///
+    /// Populated by [`crate::gameid::detect_game_disc`]; `None` for
+    /// non-game discs (or game consoles this crate does not yet recognize).
+    pub game: Option<crate::gameid::GameDiscInfo>,
     /// Disc Table of Contents, if the format provides track metadata.
     ///
     /// Present for BIN/CUE and CHD images; `None` for plain ISO files.
@@ -186,6 +191,8 @@ impl DiscImageInfo {
             .or(hfs_volume_label)
             .or(sgi.volume_label);
 
+        let game = crate::gameid::detect_game_disc(reader, pvd.as_ref());
+
         Ok(Self {
             path: path.to_path_buf(),
             format,
@@ -196,6 +203,7 @@ impl DiscImageInfo {
             hfsplus_header,
             sgi_header: sgi.header,
             efs_partition_offset: sgi.efs_partition_offset,
+            game,
             #[cfg(feature = "toc")]
             toc,
         })
@@ -284,6 +292,7 @@ impl DiscImageInfo {
                     hfsplus_header: None,
                     sgi_header: None,
                     efs_partition_offset: None,
+                    game: None,
                     #[cfg(feature = "toc")]
                     toc,
                 });
