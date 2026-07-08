@@ -97,6 +97,8 @@ pub enum FilesystemType {
     GameCube,
     /// Nintendo Wii filesystem (encrypted partitions + FST), via the `nod` crate.
     Wii,
+    /// Philips CD-i (Green Book) — ISO 9660-derived, big-endian records.
+    Cdi,
     /// Could not be determined.
     Unknown,
 }
@@ -116,6 +118,7 @@ impl FilesystemType {
             Self::Ods2 => "ODS-2",
             Self::GameCube => "GameCube",
             Self::Wii => "Wii",
+            Self::Cdi => "CD-i",
             Self::Unknown => "Unknown",
         }
     }
@@ -134,6 +137,7 @@ impl FilesystemType {
                 | Self::Udf
                 | Self::GameCube
                 | Self::Wii
+                | Self::Cdi
         )
     }
 }

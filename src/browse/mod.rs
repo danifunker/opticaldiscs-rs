@@ -33,6 +33,10 @@ pub mod udf;
 // Nintendo GameCube / Wii (via the nod crate)
 pub mod nod_fs;
 
+// Philips CD-i (Green Book)
+pub mod cdi;
+
+pub use cdi::CdiFilesystem;
 pub use efs::EfsFilesystem;
 pub use entry::{EntryType, FileEntry};
 pub use filesystem::{Filesystem, FilesystemError};
@@ -100,6 +104,8 @@ pub fn open_disc_filesystem(info: &DiscImageInfo) -> Result<Box<dyn Filesystem>,
         FilesystemType::Ods2 => Ok(Box::new(Ods2Filesystem::new(reader)?)),
 
         FilesystemType::Udf => Ok(Box::new(UdfFilesystem::new(reader)?)),
+
+        FilesystemType::Cdi => Ok(Box::new(CdiFilesystem::new(reader)?)),
 
         FilesystemType::Hfs | FilesystemType::HfsPlus => {
             // Use resolve_apple_hfs to get the correct offset — this handles

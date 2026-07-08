@@ -172,7 +172,15 @@ pub fn detect_game_disc(
         }
     }
 
-    // 3. ISO 9660 content probes (need a PVD).
+    // 3. Philips CD-i (Green Book): "CD-I " identifier at sector 16.
+    if crate::browse::cdi::detect_cdi(reader) {
+        return Some(GameDiscInfo {
+            title: crate::browse::cdi::read_volume_id(reader),
+            ..GameDiscInfo::just(Console::CdI)
+        });
+    }
+
+    // 4. ISO 9660 content probes (need a PVD).
     if let Some(pvd) = pvd {
         // Amiga CD32 / CDTV: PVD system identifier begins with "CDTV".
         if pvd.system_id.trim_start().starts_with("CDTV") {
