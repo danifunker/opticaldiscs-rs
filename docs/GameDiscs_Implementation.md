@@ -1,9 +1,10 @@
 # Game Disc Support — Implementation Plan
 
-> **Status: planned.** This is the design/implementation record for adding video-game
-> optical-disc support (PlayStation, Sega, Nintendo, 3DO, and others) on top of the
-> existing `SectorReader` + `Filesystem` architecture. Nothing here has shipped yet.
-> Tick the `- [ ]` boxes as work lands.
+> **Status: G1–G5 shipped.** Identification (PS1/PS2, Sega, PC-FX, PC Engine, CD32,
+> Neo Geo), GameCube + Wii browsing (via `nod`), Dreamcast GD-ROM (CHD + `.gdi`),
+> Philips CD-i, and 3DO Opera are all implemented, tested, and validated against real
+> discs. Remaining: Phase G6 (Xbox XDVDFS, PS3 UDF 2.50, Jaguar). Design/format
+> details below; tick the `- [x]` boxes as further work lands.
 
 Read-only support for identifying and browsing console game discs, layered onto the
 crate's existing container readers (ISO / BIN·CUE / CHD) and filesystem browsers
@@ -409,37 +410,37 @@ nod = "2"          # GameCube/Wii (+ RVZ/WBFS/CISO/GCZ/WIA/TGC/NFS); MIT OR Apac
 Each phase is independently shippable and ends with passing tests. Ordered for
 earliest user-visible payoff.
 
-### Phase G1 — Identification layer (Tier A) `[ ]`
+### Phase G1 — Identification layer (Tier A) `[x]`
 `src/gameid.rs` + `GameDiscInfo` on `DiscImageInfo`. Signature probes for PS1, PS2, Saturn,
 Mega-CD, CD32, Neo Geo CD, PC-FX. **No new parsing** — rides the existing ISO 9660 browser and
 sector reader, so it works on BIN·CUE / CHD / ISO immediately. Highest value / lowest cost.
-- [ ] `Console`, `Region`, `GameDiscInfo` types
-- [ ] sector-0 Sega/PC-FX header probes
-- [ ] `SYSTEM.CNF` (BOOT/BOOT2) PS1/PS2 probe + serial normalization + region tables
-- [ ] CD32 `"CDTV"` / Neo Geo `IPL.TXT` probes
-- [ ] wire into `DiscImageInfo::build`; unit tests with synthetic sector fixtures
+- [x] `Console`, `Region`, `GameDiscInfo` types
+- [x] sector-0 Sega/PC-FX header probes
+- [x] `SYSTEM.CNF` (BOOT/BOOT2) PS1/PS2 probe + serial normalization + region tables
+- [x] CD32 `"CDTV"` / Neo Geo `IPL.TXT` probes
+- [x] wire into `DiscImageInfo::build`; unit tests with synthetic sector fixtures
 
-### Phase G2 — GameCube + Wii via `nod` (Tier C) `[ ]`
-- [ ] add `nod`; `DiscFormat::Nintendo` + extension/magic detection (incl. `.iso` GC/Wii sniff)
-- [ ] `NodFilesystem` implementing `Filesystem` over `nod`'s `Fst`/`open_file`
-- [ ] GC/Wii `GameDiscInfo` (game code, title, region, maker) from the boot header / nod meta
-- [ ] Wii: enumerate partitions; browse the Data partition by default
-- [ ] tests against small synthetic/redump-style fixtures (env-var gated for large ones)
+### Phase G2 — GameCube + Wii via `nod` (Tier C) `[x]`
+- [x] add `nod`; `DiscFormat::Nintendo` + extension/magic detection (incl. `.iso` GC/Wii sniff)
+- [x] `NodFilesystem` implementing `Filesystem` over `nod`'s `Fst`/`open_file`
+- [x] GC/Wii `GameDiscInfo` (game code, title, region, maker) from the boot header / nod meta
+- [x] Wii: enumerate partitions; browse the Data partition by default
+- [x] tests against small synthetic/redump-style fixtures (env-var gated for large ones)
 
-### Phase G3 — Dreamcast (Tier B) `[ ]`
-- [ ] `src/gdi.rs` + `GdiSectorReader` (`.gdi` parse, LBA→file mapping, 45000 base)
-- [ ] IP.BIN parse → `GameDiscInfo`
-- [ ] ISO 9660 browse of the HD area (seed the browser at the 45000 base)
-- [ ] Dreamcast-aware CHD track selection (HD data track, not track 1)
-- [ ] `.cdi` deferred — track/session enumeration only, later
+### Phase G3 — Dreamcast (Tier B) `[x]`
+- [x] `src/gdi.rs` + `GdiSectorReader` (`.gdi` parse, LBA→file mapping, 45000 base)
+- [x] IP.BIN parse → `GameDiscInfo`
+- [x] ISO 9660 browse of the HD area (seed the browser at the 45000 base)
+- [x] Dreamcast-aware CHD track selection (HD data track, not track 1)
+- [x] `.cdi` deferred — track/session enumeration only, later
 
-### Phase G4 — CD-i (Tier C) `[ ]`
-- [ ] `src/browse/cdi.rs` — CD-i-aware ISO variant (BE records, `"CD-I "`, tree walk, system-use)
-- [ ] detection + `GameDiscInfo`
+### Phase G4 — CD-i (Tier C) `[x]`
+- [x] `src/browse/cdi.rs` — CD-i-aware ISO variant (BE records, `"CD-I "`, tree walk, system-use)
+- [x] detection + `GameDiscInfo`
 
-### Phase G5 — 3DO Opera (Tier C) `[ ]`
-- [ ] `src/opera.rs` (structs) + `src/browse/opera.rs` (browser)
-- [ ] volume/dir/entry parse, avatar-pointer file reads; detection + `GameDiscInfo`
+### Phase G5 — 3DO Opera (Tier C) `[x]`
+- [x] `src/opera.rs` (structs) + `src/browse/opera.rs` (browser)
+- [x] volume/dir/entry parse, avatar-pointer file reads; detection + `GameDiscInfo`
 
 ### Phase G6 — deferred `[ ]`
 Xbox XDVDFS; PS3 UDF 2.50 (ties into the existing planned UDF 2.50 metadata-partition work);

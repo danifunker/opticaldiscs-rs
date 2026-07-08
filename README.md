@@ -59,6 +59,11 @@ for the full list of supported targets, glibc floors, and escape hatches.
 | VMS ODS-2 / Files-11 browser (OpenVMS VAX/Alpha) | ✓ (since 0.7.0) |
 | UDF browser — DVD / data discs (physical partition, UDF 1.02–2.01) | ✓ (since 0.7.0) |
 | UDF 2.50+ metadata-partition browser (Blu-ray / metadata discs) | ◻ detected only — planned for a future release |
+| Game-disc identification — console + serial/title/region (PS1/PS2, Saturn, Mega-CD, Dreamcast, PC-FX, PC Engine CD, CD32, Neo Geo CD, 3DO, CD-i, GameCube, Wii) | ✓ (since 0.8.0) |
+| GameCube & Wii filesystem browser (ISO/GCM, RVZ/WIA, WBFS, CISO, GCZ, TGC; Wii decryption — via [`nod`](https://github.com/encounter/nod)) | ✓ (since 0.8.0) |
+| Dreamcast GD-ROM browser — high-density area (CHD + `.gdi`) | ✓ (since 0.8.0) |
+| Philips CD-i (Green Book) filesystem browser | ✓ (since 0.8.0) |
+| 3DO Opera filesystem browser | ✓ (since 0.8.0) |
 | TOC + MusicBrainz/FreeDB DiscID | ✓ (`toc` feature) |
 | Physical optical drive enumeration | ✓ (`drives` feature) |
 
