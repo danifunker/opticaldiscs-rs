@@ -57,11 +57,21 @@ pub struct GameDiscInfo {
 `.iso` extension are auto-detected by magic and routed correctly.
 
 ### New public items you can use directly (optional)
-- Browsers: `browse::NodeFilesystem` (GameCube/Wii), `browse::CdiFilesystem`,
-  `browse::OperaFilesystem`
-- `opticaldiscs::gdi` — `.gdi` parsing (`parse_gdi`, `open_gdi_hd_reader`)
-- `sector_reader::GdromSectorReader` + `GDROM_HD_START_LBA`
-- `chd::ChdInfo::is_gdrom()` / `find_gdrom_hd_track()`
+Most callers only need `open_disc_filesystem`, but these are all re-exported at
+the **crate root** for direct use:
+- Every filesystem browser: `NodeFilesystem` (GameCube/Wii), `CdiFilesystem`,
+  `OperaFilesystem`, `UdfFilesystem`, `Iso9660Filesystem`, `HfsFilesystem`,
+  `HfsPlusFilesystem`, `UfsFilesystem`, `Ods2Filesystem`, `EfsFilesystem` — each
+  constructible from a `Box<dyn SectorReader>` (or a path, for `NodeFilesystem`).
+- `detect_game_disc(reader, pvd)` — identify a console/game from any `SectorReader`.
+- `GdromSectorReader` + `GDROM_HD_START_LBA` — Dreamcast HD-area sector reader
+  (alongside `BinCueSectorReader` / `ChdSectorReader`).
+
+Also available under their modules:
+- `opticaldiscs::gdi` — `.gdi` parsing (`GdiTrack`, `parse_gdi`, `open_gdi_hd_reader`)
+- `opticaldiscs::chd::ChdInfo::is_gdrom()` / `find_gdrom_hd_track()`
+- Standalone filesystem detectors: `browse::{udf::detect_udf, cdi::detect_cdi,
+  opera::detect_opera, nod_fs::probe_nintendo}`
 
 ### Dependency
 Adds `nod` (dual MIT/Apache-2.0), which provides GameCube/Wii reading including

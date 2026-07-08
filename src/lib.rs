@@ -101,8 +101,11 @@ pub use sector_reader::BinCueSectorReader;
 // Phase 4
 pub use sector_reader::ChdSectorReader;
 
+// Dreamcast GD-ROM high-density reader (see gdi module for the .gdi container).
+pub use sector_reader::{GdromSectorReader, GDROM_HD_START_LBA};
+
 // Game-disc identification
-pub use gameid::{Console, GameDiscInfo, Region};
+pub use gameid::{detect_game_disc, Console, GameDiscInfo, Region};
 
 // Phase 8
 pub use hfs::MasterDirectoryBlock;
@@ -111,9 +114,13 @@ pub use hfsplus::HfsPlusVolumeHeader;
 // SGI
 pub use sgi::{SgiPartitionEntry, SgiPartitionType, SgiVolumeHeader};
 
-// Nintendo GameCube / Wii (via nod)
-pub use browse::NodeFilesystem;
+// Filesystem browsers. Most callers use `browse::open_disc_filesystem` and never
+// name these directly, but they are re-exported here (and from `browse`) so a
+// browser can be constructed from an existing `SectorReader` when needed.
+pub use browse::{
+    CdiFilesystem, EfsFilesystem, HfsFilesystem, HfsPlusFilesystem, Iso9660Filesystem,
+    NodeFilesystem, Ods2Filesystem, OperaFilesystem, UdfFilesystem, UfsFilesystem,
+};
 
-// EFS
-pub use browse::EfsFilesystem;
+// EFS on-disk structures.
 pub use efs::{EfsExtent, EfsInode, EfsSuperblock};

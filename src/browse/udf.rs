@@ -713,7 +713,7 @@ fn sector_to_fs_err(e: crate::error::OpticaldiscsError) -> FilesystemError {
 
 /// True if the image carries a UDF volume-recognition sequence (an `NSR02` or
 /// `NSR03` descriptor in the recognition area at sectors 16..).
-pub(crate) fn detect_udf(reader: &mut dyn SectorReader) -> bool {
+pub fn detect_udf(reader: &mut dyn SectorReader) -> bool {
     for lsn in 16..=20u64 {
         if let Ok(d) = reader.read_bytes(lsn * SECTOR, 8) {
             if d.len() >= 6 && (&d[1..6] == b"NSR02" || &d[1..6] == b"NSR03") {
