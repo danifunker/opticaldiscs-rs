@@ -30,13 +30,25 @@ pub mod ods2;
 // UDF (DVD/BD)
 pub mod udf;
 
+// Nintendo GameCube / Wii (via the nod crate)
+pub mod nod_fs;
+
+// Philips CD-i (Green Book)
+pub mod cdi;
+
+// 3DO Opera
+pub mod opera;
+
+pub use cdi::CdiFilesystem;
 pub use efs::EfsFilesystem;
 pub use entry::{EntryType, FileEntry};
 pub use filesystem::{Filesystem, FilesystemError};
 pub use hfs::HfsFilesystem;
 pub use hfsplus::HfsPlusFilesystem;
 pub use iso9660::Iso9660Filesystem;
+pub use nod_fs::NodeFilesystem;
 pub use ods2::Ods2Filesystem;
+pub use opera::OperaFilesystem;
 pub use udf::UdfFilesystem;
 pub use ufs::UfsFilesystem;
 
@@ -65,6 +77,16 @@ use crate::sector_reader::SectorReader;
 /// or [`FilesystemError::Parse`] if the disc cannot be opened or the
 /// filesystem header is malformed.
 pub fn open_disc_filesystem(info: &DiscImageInfo) -> Result<Box<dyn Filesystem>, FilesystemError> {
+    // Nintendo discs are browsed directly from the file path via `nod`, which
+    // owns its own reader (and, for Wii, decrypts partitions) — they do not use
+    // the SectorReader abstraction.
+    if matches!(
+        info.filesystem,
+        FilesystemType::GameCube | FilesystemType::Wii
+    ) {
+        return Ok(Box::new(NodeFilesystem::new(&info.path)?));
+    }
+
     let mut reader = open_sector_reader(info)?;
 
     match info.filesystem {
@@ -86,6 +108,10 @@ pub fn open_disc_filesystem(info: &DiscImageInfo) -> Result<Box<dyn Filesystem>,
         FilesystemType::Ods2 => Ok(Box::new(Ods2Filesystem::new(reader)?)),
 
         FilesystemType::Udf => Ok(Box::new(UdfFilesystem::new(reader)?)),
+
+        FilesystemType::Cdi => Ok(Box::new(CdiFilesystem::new(reader)?)),
+
+        FilesystemType::Opera => Ok(Box::new(OperaFilesystem::new(reader)?)),
 
         FilesystemType::Hfs | FilesystemType::HfsPlus => {
             // Use resolve_apple_hfs to get the correct offset — this handles
@@ -135,6 +161,17 @@ fn open_sector_reader(info: &DiscImageInfo) -> Result<Box<dyn SectorReader>, Fil
 
         DiscFormat::Chd => {
             let chd_info = crate::chd::open_chd(path).map_err(disc_err)?;
+            // Dreamcast GD-ROM: select the high-density game track and wrap it so
+            // the ISO 9660 browser sees the HD-area volume (see GdromSectorReader).
+            if chd_info.is_gdrom() {
+                if let Some(hd) = chd_info.find_gdrom_hd_track() {
+                    let inner =
+                        crate::sector_reader::ChdSectorReader::open(path, hd).map_err(disc_err)?;
+                    return Ok(Box::new(crate::sector_reader::GdromSectorReader::new(
+                        Box::new(inner),
+                    )));
+                }
+            }
             let track = chd_info
                 .find_first_data_track()
                 .ok_or(FilesystemError::Unsupported)?
@@ -144,7 +181,9 @@ fn open_sector_reader(info: &DiscImageInfo) -> Result<Box<dyn SectorReader>, Fil
             Ok(Box::new(reader))
         }
 
-        DiscFormat::MdsMdf => Err(FilesystemError::Unsupported),
+        DiscFormat::Gdi => crate::gdi::open_gdi_hd_reader(path).map_err(disc_err),
+
+        DiscFormat::Nintendo | DiscFormat::MdsMdf => Err(FilesystemError::Unsupported),
     }
 }
 

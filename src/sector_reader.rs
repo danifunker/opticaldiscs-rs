@@ -284,6 +284,46 @@ impl SectorReader for ChdSectorReader {
     }
 }
 
+// ── GD-ROM high-density area reader ──────────────────────────────────────────
+
+/// The Logical Block Address at which a Dreamcast GD-ROM's high-density area
+/// (the game data) begins. Track 3 of a GD-ROM always starts here.
+pub const GDROM_HD_START_LBA: u64 = 45000;
+
+/// A `SectorReader` that presents a Dreamcast GD-ROM high-density track using
+/// the disc's *absolute* LBAs.
+///
+/// The high-density area's ISO 9660 volume is physically stored starting at
+/// absolute LBA [`GDROM_HD_START_LBA`] (track 3), but its directory records
+/// reference **absolute** disc LBAs (e.g. the root directory at 45020) while the
+/// Primary Volume Descriptor is still addressed volume-relative at LBA 16. This
+/// wrapper reconciles the two: any requested LBA at or beyond
+/// [`GDROM_HD_START_LBA`] is rebased into the track (`lba - 45000`), while lower
+/// LBAs (the PVD at 16, the path table) pass through to the track directly. The
+/// net effect is that the standard [`crate::browse::iso9660`] browser reads the
+/// HD-area filesystem correctly with no Dreamcast-specific knowledge.
+pub struct GdromSectorReader {
+    inner: Box<dyn SectorReader>,
+}
+
+impl GdromSectorReader {
+    /// Wrap a reader already scoped to the GD-ROM high-density track (track 3).
+    pub fn new(inner: Box<dyn SectorReader>) -> Self {
+        Self { inner }
+    }
+}
+
+impl SectorReader for GdromSectorReader {
+    fn read_sector(&mut self, lba: u64) -> Result<Vec<u8>> {
+        let mapped = if lba >= GDROM_HD_START_LBA {
+            lba - GDROM_HD_START_LBA
+        } else {
+            lba
+        };
+        self.inner.read_sector(mapped)
+    }
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -348,6 +388,29 @@ mod tests {
         assert_eq!(&r.read_sector(16).unwrap()[..5], b"CD001");
         // read_bytes must compose across the raw sector gaps correctly.
         assert_eq!(&r.read_bytes(16 * SECTOR_SIZE + 100, 5).unwrap(), b"HELLO");
+    }
+
+    /// The GD-ROM reader rebases absolute HD-area LBAs into the track while
+    /// passing volume-relative low LBAs (the PVD at 16) straight through.
+    #[test]
+    fn gdrom_reader_rebases_absolute_lbas() {
+        struct Track(Vec<u8>);
+        impl SectorReader for Track {
+            fn read_sector(&mut self, lba: u64) -> Result<Vec<u8>> {
+                let off = (lba * SECTOR_SIZE) as usize;
+                Ok(self.0[off..off + SECTOR_SIZE as usize].to_vec())
+            }
+        }
+        // 25-sector track: mark sector 16 (PVD slot) and sector 20 (abs 45020).
+        let mut buf = vec![0u8; 25 * SECTOR_SIZE as usize];
+        buf[16 * SECTOR_SIZE as usize] = 0xAA;
+        buf[20 * SECTOR_SIZE as usize] = 0xBB;
+        let mut r = GdromSectorReader::new(Box::new(Track(buf)));
+
+        // LBA 16 < 45000 → track-relative 16.
+        assert_eq!(r.read_sector(16).unwrap()[0], 0xAA);
+        // Absolute LBA 45020 → track-relative 20.
+        assert_eq!(r.read_sector(GDROM_HD_START_LBA + 20).unwrap()[0], 0xBB);
     }
 
     /// Mode 2 raw sectors put user data at offset 24.

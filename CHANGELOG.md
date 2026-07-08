@@ -3,6 +3,57 @@
 All notable changes to this crate are documented here. This project follows
 [Semantic Versioning](https://semver.org/).
 
+## 0.8.0
+
+> **⚠️ Breaking change.** `DiscFormat` gained `Gdi` and `Nintendo`; `FilesystemType`
+> gained `GameCube`, `Wii`, `Cdi`, and `Opera`. Code that exhaustively matches
+> either enum must handle them (or add a wildcard arm). `DiscImageInfo` also gained
+> a `game: Option<GameDiscInfo>` field.
+
+### Added — UDF 2.50 (Blu-ray) metadata partitions
+
+- **UDF metadata-partition support** (`browse/udf.rs`): the UDF browser now
+  resolves every on-disc address as a `(logical block number, partition
+  reference)` pair through the Logical Volume Descriptor's partition maps. Type-2
+  `*UDF Metadata Partition` maps (used by Blu-ray / UDF 2.50+) are translated
+  through the metadata file's extents into the underlying physical partition, so
+  BDMV discs — whose file entries and directories live in the metadata partition
+  while file data lives in the physical partition — now browse. Unknown type-2
+  maps (virtual/sparable) are kept index-aligned and error only if referenced.
+- **Extent-aware `read_file_range`** for UDF: a partial read now touches only the
+  overlapping extents instead of loading the whole file, so seeking into a
+  multi-gigabyte Blu-ray `.m2ts` stream is cheap.
+
+### Added — video-game optical disc support
+
+- **Game-disc identification** (`gameid.rs`): a new `GameDiscInfo { console, serial,
+  title, region, maker, version }` on `DiscImageInfo`, populated by signature probes
+  that work across ISO/BIN·CUE/CHD. Recognizes PlayStation 1 & 2 (`SYSTEM.CNF`
+  BOOT/BOOT2, incl. PS2 UDF-bridge DVDs), Sega Saturn / Mega-CD / Dreamcast (IP.BIN
+  headers), NEC PC-FX & PC Engine CD, Amiga CD32/CDTV, SNK Neo Geo CD, 3DO, CD-i,
+  and Nintendo GameCube / Wii, with serial normalization and region tables.
+- **GameCube & Wii browsing** (`browse/nod_fs.rs`) via the [`nod`](https://github.com/encounter/nod)
+  crate (MIT/Apache-2.0): ISO/GCM, RVZ/WIA, WBFS, CISO, GCZ, TGC, and NFS, including
+  Wii AES partition decryption. `nod` bundles the Wii common keys, so **no
+  user-supplied key file is required** (it does transitively include Nintendo's
+  common key). `DiscFormat::Nintendo`, `FilesystemType::{GameCube, Wii}`.
+- **Dreamcast GD-ROM** browsing of the high-density game area, for both CHD and the
+  new `.gdi` container (`gdi.rs`). New `GdromSectorReader` rebases the absolute
+  HD-area LBAs (≥ 45000) so the ISO 9660 browser reads the game filesystem;
+  `ChdInfo::is_gdrom()` / `find_gdrom_hd_track()`. `DiscFormat::Gdi`.
+- **Philips CD-i** (Green Book) browser (`browse/cdi.rs`, `FilesystemType::Cdi`):
+  `"CD-I "` detection, big-endian directory records, M-type path-table root lookup,
+  and System-Use attribute decoding (directory bit `0x8000`).
+- **3DO Opera** filesystem browser (`browse/opera.rs`, `FilesystemType::Opera`):
+  block-0 volume header, block-based directory tree, and avatar-list file reads.
+- `examples/inspect_disc.rs`: a general disc inspector (container, filesystem,
+  game-console identity, and a directory listing).
+
+See [`docs/GameDiscs_Implementation.md`](docs/GameDiscs_Implementation.md) for the
+full design and per-console format details. Parsers were reverse-engineered from and
+validated against real discs; committed tests use synthetic fixtures (no game data —
+and, for Nintendo, never derived from a real game).
+
 ## 0.7.0
 
 > **⚠️ Breaking change.** `FilesystemType` gained new variants (`HighSierra`,

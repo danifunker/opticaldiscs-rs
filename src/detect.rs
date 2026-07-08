@@ -128,6 +128,11 @@ pub struct DiscImageInfo {
     /// Byte offset of the EFS partition within the disc, if the filesystem
     /// is EFS. Used by browsers to locate the superblock and inodes.
     pub efs_partition_offset: Option<u64>,
+    /// Video-game console identity, if the disc is a recognized game disc.
+    ///
+    /// Populated by [`crate::gameid::detect_game_disc`]; `None` for
+    /// non-game discs (or game consoles this crate does not yet recognize).
+    pub game: Option<crate::gameid::GameDiscInfo>,
     /// Disc Table of Contents, if the format provides track metadata.
     ///
     /// Present for BIN/CUE and CHD images; `None` for plain ISO files.
@@ -152,13 +157,45 @@ impl DiscImageInfo {
         let format = detect_format(path)?;
 
         match format {
-            DiscFormat::Iso => Self::probe_iso(path),
+            // A raw GameCube/Wii dump often carries a plain `.iso` extension, so
+            // try the Nintendo path first and fall back to ISO 9660.
+            DiscFormat::Iso => match Self::probe_nintendo(path) {
+                Some(info) => Ok(info),
+                None => Self::probe_iso(path),
+            },
             DiscFormat::BinCue => Self::probe_bincue(path),
             DiscFormat::Chd => Self::probe_chd(path),
+            DiscFormat::Nintendo => Self::probe_nintendo(path).ok_or_else(|| {
+                OpticaldiscsError::UnsupportedFormat(format!(
+                    "not a recognisable GameCube/Wii image: {}",
+                    path.display()
+                ))
+            }),
+            DiscFormat::Gdi => Self::probe_gdi(path),
             DiscFormat::MdsMdf => Err(OpticaldiscsError::UnsupportedFormat(
                 "MDS/MDF is not supported".into(),
             )),
         }
+    }
+
+    /// Probe a GameCube or Wii disc image via `nod`. Returns `None` when `path`
+    /// is not a recognizable Nintendo disc (e.g. a plain data ISO).
+    fn probe_nintendo(path: &Path) -> Option<Self> {
+        let (filesystem, game) = crate::browse::nod_fs::probe_nintendo(path)?;
+        Some(Self {
+            path: path.to_path_buf(),
+            format: DiscFormat::Nintendo,
+            filesystem,
+            volume_label: game.title.clone(),
+            pvd: None,
+            hfs_mdb: None,
+            hfsplus_header: None,
+            sgi_header: None,
+            efs_partition_offset: None,
+            game: Some(game),
+            #[cfg(feature = "toc")]
+            toc: None,
+        })
     }
 
     /// Probe a `.cue` (or `.bin`) BIN/CUE image.
@@ -180,11 +217,19 @@ impl DiscImageInfo {
                 filesystem = fs;
             }
         }
-        let volume_label = pvd
+        let mut volume_label = pvd
             .as_ref()
             .map(|p| p.volume_id.clone())
             .or(hfs_volume_label)
             .or(sgi.volume_label);
+        if volume_label.is_none() && filesystem == FilesystemType::Cdi {
+            volume_label = crate::browse::cdi::read_volume_id(reader);
+        }
+        if volume_label.is_none() && filesystem == FilesystemType::Opera {
+            volume_label = crate::browse::opera::read_label(reader);
+        }
+
+        let game = crate::gameid::detect_game_disc(reader, pvd.as_ref());
 
         Ok(Self {
             path: path.to_path_buf(),
@@ -196,6 +241,7 @@ impl DiscImageInfo {
             hfsplus_header,
             sgi_header: sgi.header,
             efs_partition_offset: sgi.efs_partition_offset,
+            game,
             #[cfg(feature = "toc")]
             toc,
         })
@@ -247,6 +293,18 @@ impl DiscImageInfo {
         )
     }
 
+    /// Probe a Dreamcast `.gdi` disc, browsing its high-density game track.
+    fn probe_gdi(path: &Path) -> Result<Self> {
+        let mut reader = crate::gdi::open_gdi_hd_reader(path)?;
+        Self::build(
+            path,
+            DiscFormat::Gdi,
+            reader.as_mut(),
+            #[cfg(feature = "toc")]
+            None,
+        )
+    }
+
     /// Probe a plain `.iso` file.
     fn probe_iso(path: &Path) -> Result<Self> {
         let mut reader = IsoSectorReader::new(path)?;
@@ -284,11 +342,28 @@ impl DiscImageInfo {
                     hfsplus_header: None,
                     sgi_header: None,
                     efs_partition_offset: None,
+                    game: None,
                     #[cfg(feature = "toc")]
                     toc,
                 });
             }
         };
+
+        // Dreamcast GD-ROM: browse the high-density game track (track 3+ at
+        // frame 45000) through a GdromSectorReader that rebases absolute LBAs.
+        if chd_info.is_gdrom() {
+            if let Some(hd) = chd_info.find_gdrom_hd_track() {
+                let inner = ChdSectorReader::open(path, hd)?;
+                let mut reader = crate::sector_reader::GdromSectorReader::new(Box::new(inner));
+                return Self::build(
+                    path,
+                    DiscFormat::Chd,
+                    &mut reader,
+                    #[cfg(feature = "toc")]
+                    toc,
+                );
+            }
+        }
 
         let mut reader = ChdSectorReader::open(path, &data_track)?;
         Self::build(
@@ -568,6 +643,16 @@ pub(crate) fn probe_filesystem(
     // ── Try UDF first (a UDF/ISO bridge disc should present its UDF tree) ────
     if crate::browse::udf::detect_udf(reader) {
         return Ok((FilesystemType::Udf, None));
+    }
+
+    // ── Try CD-i (Green Book): "CD-I " identifier at sector 16, byte 1 ───────
+    if crate::browse::cdi::detect_cdi(reader) {
+        return Ok((FilesystemType::Cdi, None));
+    }
+
+    // ── Try 3DO Opera: volume header (rec type 1 + five 0x5A) at block 0 ─────
+    if crate::browse::opera::detect_opera(reader) {
+        return Ok((FilesystemType::Opera, None));
     }
 
     // ── Try ISO 9660 / High Sierra ──────────────────────────────────────────

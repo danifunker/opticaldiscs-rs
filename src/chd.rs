@@ -153,6 +153,28 @@ impl ChdInfo {
     pub fn find_first_data_track(&self) -> Option<&ChdTrack> {
         self.tracks.iter().find(|t| t.is_data())
     }
+
+    /// Returns `true` if this CHD is a Dreamcast GD-ROM.
+    ///
+    /// A GD-ROM stores its high-density (game) area beginning at frame 45000
+    /// ([`crate::sector_reader::GDROM_HD_START_LBA`]); a data track starting at
+    /// or beyond that offset is the tell-tale sign, distinguishing a GD-ROM from
+    /// an ordinary CD image whose tracks never reach that frame count so early.
+    pub fn is_gdrom(&self) -> bool {
+        self.tracks
+            .iter()
+            .any(|t| t.is_data() && t.frame_offset >= crate::sector_reader::GDROM_HD_START_LBA)
+    }
+
+    /// Return the Dreamcast high-density game track (the first data track at or
+    /// beyond frame 45000), which carries the main ISO 9660 filesystem.
+    ///
+    /// Returns `None` if the CHD is not a GD-ROM.
+    pub fn find_gdrom_hd_track(&self) -> Option<&ChdTrack> {
+        self.tracks
+            .iter()
+            .find(|t| t.is_data() && t.frame_offset >= crate::sector_reader::GDROM_HD_START_LBA)
+    }
 }
 
 // ── Public API ────────────────────────────────────────────────────────────────
