@@ -108,6 +108,9 @@ pub use hfsplus::HfsPlusVolumeHeader;
 // SGI
 pub use sgi::{SgiPartitionEntry, SgiPartitionType, SgiVolumeHeader};
 
+// Nintendo GameCube / Wii (via nod)
+pub use browse::NodeFilesystem;
+
 // EFS
 pub use browse::EfsFilesystem;
 pub use efs::{EfsExtent, EfsInode, EfsSuperblock};

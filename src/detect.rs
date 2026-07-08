@@ -157,13 +157,47 @@ impl DiscImageInfo {
         let format = detect_format(path)?;
 
         match format {
-            DiscFormat::Iso => Self::probe_iso(path),
+            // A raw GameCube/Wii dump often carries a plain `.iso` extension, so
+            // try the Nintendo path first and fall back to ISO 9660.
+            DiscFormat::Iso => match Self::probe_nintendo(path) {
+                Some(info) => Ok(info),
+                None => Self::probe_iso(path),
+            },
             DiscFormat::BinCue => Self::probe_bincue(path),
             DiscFormat::Chd => Self::probe_chd(path),
+            DiscFormat::Nintendo => Self::probe_nintendo(path).ok_or_else(|| {
+                OpticaldiscsError::UnsupportedFormat(format!(
+                    "not a recognisable GameCube/Wii image: {}",
+                    path.display()
+                ))
+            }),
+            DiscFormat::Gdi => Err(OpticaldiscsError::UnsupportedFormat(
+                "GDI (Dreamcast) browsing is not yet implemented".into(),
+            )),
             DiscFormat::MdsMdf => Err(OpticaldiscsError::UnsupportedFormat(
                 "MDS/MDF is not supported".into(),
             )),
         }
+    }
+
+    /// Probe a GameCube or Wii disc image via `nod`. Returns `None` when `path`
+    /// is not a recognizable Nintendo disc (e.g. a plain data ISO).
+    fn probe_nintendo(path: &Path) -> Option<Self> {
+        let (filesystem, game) = crate::browse::nod_fs::probe_nintendo(path)?;
+        Some(Self {
+            path: path.to_path_buf(),
+            format: DiscFormat::Nintendo,
+            filesystem,
+            volume_label: game.title.clone(),
+            pvd: None,
+            hfs_mdb: None,
+            hfsplus_header: None,
+            sgi_header: None,
+            efs_partition_offset: None,
+            game: Some(game),
+            #[cfg(feature = "toc")]
+            toc: None,
+        })
     }
 
     /// Probe a `.cue` (or `.bin`) BIN/CUE image.

@@ -13,6 +13,13 @@ pub enum DiscFormat {
     Chd,
     /// Media Descriptor Sidecar (`.mds` + `.mdf`) — not yet implemented.
     MdsMdf,
+    /// Dreamcast GD-ROM track descriptor (`.gdi`) with sidecar track files.
+    Gdi,
+    /// Nintendo GameCube / Wii disc image (`.gcm`, `.rvz`, `.wbfs`, `.ciso`,
+    /// `.gcz`, `.wia`, `.tgc`, `.nfs`) — read via the `nod` crate. A raw GameCube
+    /// or Wii dump may also carry a plain `.iso` extension; those are detected by
+    /// magic and browsed through the same path.
+    Nintendo,
 }
 
 impl DiscFormat {
@@ -24,6 +31,8 @@ impl DiscFormat {
             "bin" | "cue" => Some(Self::BinCue),
             "chd" => Some(Self::Chd),
             "mds" | "mdf" => Some(Self::MdsMdf),
+            "gdi" => Some(Self::Gdi),
+            "gcm" | "rvz" | "wbfs" | "ciso" | "gcz" | "wia" | "tgc" | "nfs" => Some(Self::Nintendo),
             _ => None,
         }
     }
@@ -35,6 +44,8 @@ impl DiscFormat {
             Self::BinCue => "BIN/CUE",
             Self::Chd => "CHD (Compressed Hunks of Data)",
             Self::MdsMdf => "MDS/MDF",
+            Self::Gdi => "GDI (Dreamcast GD-ROM)",
+            Self::Nintendo => "Nintendo GameCube/Wii",
         }
     }
 
@@ -45,13 +56,18 @@ impl DiscFormat {
             Self::BinCue => &["bin", "cue"],
             Self::Chd => &["chd"],
             Self::MdsMdf => &["mds", "mdf"],
+            Self::Gdi => &["gdi"],
+            Self::Nintendo => &["gcm", "rvz", "wbfs", "ciso", "gcz", "wia", "tgc", "nfs"],
         }
     }
 }
 
 /// All file extensions recognised by the library, for use in file-open dialogs.
 pub fn supported_extensions() -> &'static [&'static str] {
-    &["iso", "toast", "bin", "cue", "chd", "mds", "mdf"]
+    &[
+        "iso", "toast", "bin", "cue", "chd", "mds", "mdf", "gdi", "gcm", "rvz", "wbfs", "ciso",
+        "gcz", "wia", "tgc", "nfs",
+    ]
 }
 
 /// Filesystem type found on the data track of a disc.
@@ -77,6 +93,10 @@ pub enum FilesystemType {
     Ufs,
     /// VMS ODS-2 / Files-11 — OpenVMS (VAX / Alpha) discs.
     Ods2,
+    /// Nintendo GameCube filesystem (GCM/FST), browsed via the `nod` crate.
+    GameCube,
+    /// Nintendo Wii filesystem (encrypted partitions + FST), via the `nod` crate.
+    Wii,
     /// Could not be determined.
     Unknown,
 }
@@ -94,6 +114,8 @@ impl FilesystemType {
             Self::Efs => "EFS",
             Self::Ufs => "UFS",
             Self::Ods2 => "ODS-2",
+            Self::GameCube => "GameCube",
+            Self::Wii => "Wii",
             Self::Unknown => "Unknown",
         }
     }
@@ -110,6 +132,8 @@ impl FilesystemType {
                 | Self::Ufs
                 | Self::Ods2
                 | Self::Udf
+                | Self::GameCube
+                | Self::Wii
         )
     }
 }

@@ -30,12 +30,16 @@ pub mod ods2;
 // UDF (DVD/BD)
 pub mod udf;
 
+// Nintendo GameCube / Wii (via the nod crate)
+pub mod nod_fs;
+
 pub use efs::EfsFilesystem;
 pub use entry::{EntryType, FileEntry};
 pub use filesystem::{Filesystem, FilesystemError};
 pub use hfs::HfsFilesystem;
 pub use hfsplus::HfsPlusFilesystem;
 pub use iso9660::Iso9660Filesystem;
+pub use nod_fs::NodeFilesystem;
 pub use ods2::Ods2Filesystem;
 pub use udf::UdfFilesystem;
 pub use ufs::UfsFilesystem;
@@ -65,6 +69,16 @@ use crate::sector_reader::SectorReader;
 /// or [`FilesystemError::Parse`] if the disc cannot be opened or the
 /// filesystem header is malformed.
 pub fn open_disc_filesystem(info: &DiscImageInfo) -> Result<Box<dyn Filesystem>, FilesystemError> {
+    // Nintendo discs are browsed directly from the file path via `nod`, which
+    // owns its own reader (and, for Wii, decrypts partitions) — they do not use
+    // the SectorReader abstraction.
+    if matches!(
+        info.filesystem,
+        FilesystemType::GameCube | FilesystemType::Wii
+    ) {
+        return Ok(Box::new(NodeFilesystem::new(&info.path)?));
+    }
+
     let mut reader = open_sector_reader(info)?;
 
     match info.filesystem {
@@ -144,7 +158,9 @@ fn open_sector_reader(info: &DiscImageInfo) -> Result<Box<dyn SectorReader>, Fil
             Ok(Box::new(reader))
         }
 
-        DiscFormat::MdsMdf => Err(FilesystemError::Unsupported),
+        DiscFormat::Gdi | DiscFormat::Nintendo | DiscFormat::MdsMdf => {
+            Err(FilesystemError::Unsupported)
+        }
     }
 }
 
