@@ -36,6 +36,9 @@ pub mod nod_fs;
 // Philips CD-i (Green Book)
 pub mod cdi;
 
+// 3DO Opera
+pub mod opera;
+
 pub use cdi::CdiFilesystem;
 pub use efs::EfsFilesystem;
 pub use entry::{EntryType, FileEntry};
@@ -45,6 +48,7 @@ pub use hfsplus::HfsPlusFilesystem;
 pub use iso9660::Iso9660Filesystem;
 pub use nod_fs::NodeFilesystem;
 pub use ods2::Ods2Filesystem;
+pub use opera::OperaFilesystem;
 pub use udf::UdfFilesystem;
 pub use ufs::UfsFilesystem;
 
@@ -106,6 +110,8 @@ pub fn open_disc_filesystem(info: &DiscImageInfo) -> Result<Box<dyn Filesystem>,
         FilesystemType::Udf => Ok(Box::new(UdfFilesystem::new(reader)?)),
 
         FilesystemType::Cdi => Ok(Box::new(CdiFilesystem::new(reader)?)),
+
+        FilesystemType::Opera => Ok(Box::new(OperaFilesystem::new(reader)?)),
 
         FilesystemType::Hfs | FilesystemType::HfsPlus => {
             // Use resolve_apple_hfs to get the correct offset — this handles

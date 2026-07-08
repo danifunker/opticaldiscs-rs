@@ -225,6 +225,9 @@ impl DiscImageInfo {
         if volume_label.is_none() && filesystem == FilesystemType::Cdi {
             volume_label = crate::browse::cdi::read_volume_id(reader);
         }
+        if volume_label.is_none() && filesystem == FilesystemType::Opera {
+            volume_label = crate::browse::opera::read_label(reader);
+        }
 
         let game = crate::gameid::detect_game_disc(reader, pvd.as_ref());
 
@@ -645,6 +648,11 @@ pub(crate) fn probe_filesystem(
     // ── Try CD-i (Green Book): "CD-I " identifier at sector 16, byte 1 ───────
     if crate::browse::cdi::detect_cdi(reader) {
         return Ok((FilesystemType::Cdi, None));
+    }
+
+    // ── Try 3DO Opera: volume header (rec type 1 + five 0x5A) at block 0 ─────
+    if crate::browse::opera::detect_opera(reader) {
+        return Ok((FilesystemType::Opera, None));
     }
 
     // ── Try ISO 9660 / High Sierra ──────────────────────────────────────────

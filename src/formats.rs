@@ -99,6 +99,8 @@ pub enum FilesystemType {
     Wii,
     /// Philips CD-i (Green Book) — ISO 9660-derived, big-endian records.
     Cdi,
+    /// 3DO Opera filesystem (big-endian, block-based directory tree).
+    Opera,
     /// Could not be determined.
     Unknown,
 }
@@ -119,6 +121,7 @@ impl FilesystemType {
             Self::GameCube => "GameCube",
             Self::Wii => "Wii",
             Self::Cdi => "CD-i",
+            Self::Opera => "3DO Opera",
             Self::Unknown => "Unknown",
         }
     }
@@ -138,6 +141,7 @@ impl FilesystemType {
                 | Self::GameCube
                 | Self::Wii
                 | Self::Cdi
+                | Self::Opera
         )
     }
 }
