@@ -3,6 +3,24 @@
 All notable changes to this crate are documented here. This project follows
 [Semantic Versioning](https://semver.org/).
 
+## 0.9.0
+
+### Fixed — Dreamcast GD-ROM multi-track high-density areas
+
+- **GD-ROM high-density areas that span multiple data tracks now browse and read
+  fully.** A GD-ROM's HD area is often split across several data tracks (e.g.
+  track 3 and track 5, separated by audio tracks); the reader previously wrapped
+  only the first HD track and rebased every absolute LBA by a fixed 45000, so any
+  file or subdirectory whose extent lived in a later data track was unreadable
+  (`failed to fill whole buffer`). `GdromSectorReader` now holds every HD data
+  track and routes each absolute LBA to the track that physically contains it,
+  reading it track-relative. Applies to both CHD (`browse::open_disc_filesystem`)
+  and `.gdi` (`gdi::open_gdi_hd_reader`) sources. New
+  `ChdInfo::find_gdrom_hd_tracks` and `GdromSectorReader::from_tracks` /
+  `GdromHdTrack` support this; the single-track `GdromSectorReader::new` is
+  retained. Verified against *NFL Blitz 2001* and *4x4 Evo* (files in later
+  tracks, including subfolder contents, now read with correct size).
+
 ## 0.8.0
 
 > **⚠️ Breaking change.** `DiscFormat` gained `Gdi` and `Nintendo`; `FilesystemType`

@@ -175,6 +175,21 @@ impl ChdInfo {
             .iter()
             .find(|t| t.is_data() && t.frame_offset >= crate::sector_reader::GDROM_HD_START_LBA)
     }
+
+    /// Return **all** high-density data tracks (every data track at or beyond
+    /// frame 45000), in track order.
+    ///
+    /// A GD-ROM's high-density area routinely spans multiple data tracks
+    /// separated by audio tracks; file and directory extents may live in any of
+    /// them. Reading the whole HD-area filesystem therefore requires every such
+    /// track, not just the first. Returns an empty vector if the CHD is not a
+    /// GD-ROM.
+    pub fn find_gdrom_hd_tracks(&self) -> Vec<&ChdTrack> {
+        self.tracks
+            .iter()
+            .filter(|t| t.is_data() && t.frame_offset >= crate::sector_reader::GDROM_HD_START_LBA)
+            .collect()
+    }
 }
 
 // ── Public API ────────────────────────────────────────────────────────────────

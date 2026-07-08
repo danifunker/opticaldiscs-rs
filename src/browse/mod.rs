@@ -161,15 +161,26 @@ fn open_sector_reader(info: &DiscImageInfo) -> Result<Box<dyn SectorReader>, Fil
 
         DiscFormat::Chd => {
             let chd_info = crate::chd::open_chd(path).map_err(disc_err)?;
-            // Dreamcast GD-ROM: select the high-density game track and wrap it so
-            // the ISO 9660 browser sees the HD-area volume (see GdromSectorReader).
+            // Dreamcast GD-ROM: the high-density area can span several data tracks
+            // (separated by audio tracks), so wrap every HD data track and let the
+            // GdromSectorReader route absolute LBAs to the track that holds them
+            // (see GdromSectorReader) — the ISO 9660 browser then sees one volume.
             if chd_info.is_gdrom() {
-                if let Some(hd) = chd_info.find_gdrom_hd_track() {
-                    let inner =
-                        crate::sector_reader::ChdSectorReader::open(path, hd).map_err(disc_err)?;
-                    return Ok(Box::new(crate::sector_reader::GdromSectorReader::new(
-                        Box::new(inner),
-                    )));
+                let hd_tracks = chd_info.find_gdrom_hd_tracks();
+                if !hd_tracks.is_empty() {
+                    let mut gd_tracks = Vec::with_capacity(hd_tracks.len());
+                    for hd in hd_tracks {
+                        let reader = crate::sector_reader::ChdSectorReader::open(path, hd)
+                            .map_err(disc_err)?;
+                        gd_tracks.push(crate::sector_reader::GdromHdTrack {
+                            start_lba: hd.frame_offset,
+                            frame_count: hd.frames as u64,
+                            reader: Box::new(reader),
+                        });
+                    }
+                    return Ok(Box::new(
+                        crate::sector_reader::GdromSectorReader::from_tracks(gd_tracks),
+                    ));
                 }
             }
             let track = chd_info

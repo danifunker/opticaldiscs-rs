@@ -9,12 +9,14 @@
 //! ```
 //!
 //! where `type` is `4` for a data track or `0` for audio. A GD-ROM's
-//! high-density game area is track 3, which always starts at absolute LBA
-//! [`GDROM_HD_START_LBA`] (45000) and carries the main ISO 9660 filesystem.
+//! high-density game area begins at absolute LBA [`GDROM_HD_START_LBA`] (45000,
+//! track 3) and carries the main ISO 9660 filesystem — but it can span several
+//! data tracks (separated by audio tracks), so file data may live in track 3,
+//! track 5, and beyond.
 //!
-//! [`open_gdi_hd_reader`] parses the descriptor, opens the high-density track's
-//! file, and returns a [`SectorReader`] wrapped in [`GdromSectorReader`] so the
-//! standard ISO 9660 browser reads the HD-area filesystem directly.
+//! [`open_gdi_hd_reader`] parses the descriptor, opens every high-density data
+//! track's file, and returns a [`SectorReader`] wrapped in [`GdromSectorReader`]
+//! so the standard ISO 9660 browser reads the whole HD-area filesystem directly.
 //!
 //! Reference: `docs/GameDiscs_Implementation.md` (Phase G3), dreamcast.wiki.
 
@@ -125,27 +127,65 @@ fn take_uint(s: &str) -> Option<(u64, &str)> {
     Some((value, &s[end..]))
 }
 
-/// Open the high-density (game) track of a `.gdi` disc as a browsable
+/// Open the high-density (game) area of a `.gdi` disc as a browsable
 /// [`SectorReader`].
 ///
-/// Selects the first data track at or beyond [`GDROM_HD_START_LBA`], opens its
-/// track file (resolving the name relative to the `.gdi`'s directory), and wraps
-/// it in a [`GdromSectorReader`] so absolute HD-area LBAs are rebased correctly.
+/// Selects **every** data track at or beyond [`GDROM_HD_START_LBA`], opens each
+/// track file (resolving names relative to the `.gdi`'s directory), and wraps
+/// them in a [`GdromSectorReader`] that routes each absolute HD-area LBA to the
+/// track physically holding it. Each track's coverage runs up to the next
+/// track's start LBA (the last track's from its file length).
 ///
 /// # Errors
 ///
 /// Returns an error if the descriptor cannot be parsed, no high-density data
-/// track exists, or the track file cannot be opened.
+/// track exists, or a track file cannot be opened.
 pub fn open_gdi_hd_reader(gdi_path: &Path) -> Result<Box<dyn SectorReader>> {
-    let tracks = parse_gdi(gdi_path)?;
-    let hd = tracks
-        .iter()
-        .find(|t| t.is_data() && t.start_lba >= GDROM_HD_START_LBA)
-        .ok_or_else(|| OpticaldiscsError::Parse("no high-density data track in .gdi".into()))?;
+    let mut tracks = parse_gdi(gdi_path)?;
+    // Sort by start LBA so each track's coverage runs up to the next track's
+    // start; the HD area can span several data tracks separated by audio tracks.
+    tracks.sort_by_key(|t| t.start_lba);
 
     let dir = gdi_path.parent().unwrap_or_else(|| Path::new("."));
-    let reader = GdiTrackReader::open(dir, hd)?;
-    Ok(Box::new(GdromSectorReader::new(Box::new(reader))))
+    let mut gd_tracks = Vec::new();
+    for (i, track) in tracks.iter().enumerate() {
+        if !(track.is_data() && track.start_lba >= GDROM_HD_START_LBA) {
+            continue;
+        }
+        // Coverage extends to the next track's start; for the final track fall
+        // back to the track file's own length so its extent is bounded.
+        let frame_count = match tracks.get(i + 1) {
+            Some(next) => next.start_lba.saturating_sub(track.start_lba),
+            None => gdi_track_frame_count(dir, track)?,
+        };
+        let reader = GdiTrackReader::open(dir, track)?;
+        gd_tracks.push(crate::sector_reader::GdromHdTrack {
+            start_lba: track.start_lba,
+            frame_count,
+            reader: Box::new(reader),
+        });
+    }
+
+    if gd_tracks.is_empty() {
+        return Err(OpticaldiscsError::Parse(
+            "no high-density data track in .gdi".into(),
+        ));
+    }
+    Ok(Box::new(GdromSectorReader::from_tracks(gd_tracks)))
+}
+
+/// Number of sectors in `track`'s backing file, from its byte length.
+fn gdi_track_frame_count(dir: &Path, track: &GdiTrack) -> Result<u64> {
+    let path: PathBuf = dir.join(&track.filename);
+    let len = std::fs::metadata(&path)
+        .map_err(OpticaldiscsError::Io)?
+        .len();
+    let phys = if track.sector_size == 0 {
+        RAW_SECTOR_SIZE
+    } else {
+        track.sector_size as u64
+    };
+    Ok(len.saturating_sub(track.offset) / phys)
 }
 
 /// A [`SectorReader`] over a single GD-ROM track file, presenting 2048-byte
