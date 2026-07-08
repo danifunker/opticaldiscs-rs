@@ -64,6 +64,10 @@ pub mod gameid;
 // Dreamcast GD-ROM .gdi container
 pub mod gdi;
 
+// Compressed container formats: PSP CSO and gzip-compressed images
+pub mod cso;
+pub mod gz;
+
 // Phase 7 (HFS metadata — not browsing, see browse/)
 pub mod apm;
 pub mod hfs;

@@ -5,6 +5,27 @@ All notable changes to this crate are documented here. This project follows
 
 ## 0.9.0
 
+### Added — PSP CSO, gzip-compressed images, and PSP identification
+
+- **PSP `.cso` (CISOv1) support** (`cso.rs`): a new [`DiscFormat::Cso`] and
+  `CsoSectorReader` decompress a PSP UMD's raw-DEFLATE blocks on demand, exposing
+  the underlying ISO 9660 volume to the standard browser. PSP discs are
+  identified (`Console::Psp`) via `UMD_DATA.BIN`, with the serial taken from its
+  first field.
+- **gzip-compressed image (`.gz`) support** (`gz.rs`): a new [`DiscFormat::Gz`]
+  and `GzSectorReader` present a gzip-compressed disc image (typically a PS2 ISO,
+  as used by PCSX2) as cooked sectors. Because gzip has no random access, the
+  reader decompresses forward and restarts on backward seeks — **directory
+  listing is fast** (structures sit near the start), while reading the *contents*
+  of a file deep in a multi-gigabyte image is proportionally slower.
+  - To keep opening fast, gz images prefer the **ISO 9660 bridge tree** over UDF
+    (whose anchor sits at the end of the disc) and, during game identification,
+    avoid reading boot files that live deep in the image: PS2 discs are
+    identified from the PVD `PLAYSTATION` marker plus the boot-ELF filename in the
+    root directory (serial) and the presence of a UDF bridge (PS1 vs PS2) — all
+    near-the-start metadata. New `detect_game_disc_opts` /
+    `probe_filesystem_opts` carry the `deep_reads` / `prefer_iso` options.
+
 ### Fixed — Dreamcast GD-ROM multi-track high-density areas
 
 - **GD-ROM high-density areas that span multiple data tracks now browse and read

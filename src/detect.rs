@@ -172,6 +172,8 @@ impl DiscImageInfo {
                 ))
             }),
             DiscFormat::Gdi => Self::probe_gdi(path),
+            DiscFormat::Cso => Self::probe_cso(path),
+            DiscFormat::Gz => Self::probe_gz(path),
             DiscFormat::MdsMdf => Err(OpticaldiscsError::UnsupportedFormat(
                 "MDS/MDF is not supported".into(),
             )),
@@ -209,7 +211,13 @@ impl DiscImageInfo {
         reader: &mut dyn SectorReader,
         #[cfg(feature = "toc")] toc: Option<crate::toc::DiscTOC>,
     ) -> Result<Self> {
-        let (mut filesystem, pvd) = probe_filesystem(reader)?;
+        // gzip is a sequential-access container: prefer the ISO 9660 bridge tree
+        // so browsing never reads the UDF anchor at the end of the disc, and
+        // avoid deep file-content reads during game identification (a PS2 boot
+        // file can sit near the end of the image). Both would otherwise force a
+        // full decompression.
+        let prefer_iso = matches!(format, DiscFormat::Gz);
+        let (mut filesystem, pvd) = probe_filesystem_opts(reader, prefer_iso)?;
         let (hfs_mdb, hfsplus_header, hfs_volume_label) = probe_hfs_detail(reader, filesystem);
         let sgi = probe_sgi_detail(reader);
         if filesystem == FilesystemType::Unknown {
@@ -229,7 +237,7 @@ impl DiscImageInfo {
             volume_label = crate::browse::opera::read_label(reader);
         }
 
-        let game = crate::gameid::detect_game_disc(reader, pvd.as_ref());
+        let game = crate::gameid::detect_game_disc_opts(reader, pvd.as_ref(), !prefer_iso);
 
         Ok(Self {
             path: path.to_path_buf(),
@@ -311,6 +319,32 @@ impl DiscImageInfo {
         Self::build(
             path,
             DiscFormat::Iso,
+            &mut reader,
+            #[cfg(feature = "toc")]
+            None,
+        )
+    }
+
+    /// Probe a PSP `.cso` (CISOv1) image: decompress on the fly and probe the
+    /// underlying ISO 9660 volume.
+    fn probe_cso(path: &Path) -> Result<Self> {
+        let mut reader = crate::cso::CsoSectorReader::open(path)?;
+        Self::build(
+            path,
+            DiscFormat::Cso,
+            &mut reader,
+            #[cfg(feature = "toc")]
+            None,
+        )
+    }
+
+    /// Probe a `.gz` image: decompress on the fly and probe the underlying
+    /// filesystem (typically a PS2 ISO 9660 volume).
+    fn probe_gz(path: &Path) -> Result<Self> {
+        let mut reader = crate::gz::GzSectorReader::open(path)?;
+        Self::build(
+            path,
+            DiscFormat::Gz,
             &mut reader,
             #[cfg(feature = "toc")]
             None,
@@ -640,6 +674,32 @@ fn probe_sgi_detail(reader: &mut dyn SectorReader) -> SgiProbe {
 pub(crate) fn probe_filesystem(
     reader: &mut dyn SectorReader,
 ) -> Result<(FilesystemType, Option<PrimaryVolumeDescriptor>)> {
+    probe_filesystem_opts(reader, false)
+}
+
+/// Like [`probe_filesystem`], but when `prefer_iso` is set the ISO 9660 tree is
+/// chosen ahead of UDF whenever a PVD is present.
+///
+/// UDF/ISO **bridge** discs (e.g. PlayStation 2) carry equivalent trees, but
+/// UDF's Anchor Volume Descriptor lives at the *end* of the disc. On a
+/// sequential-access container (a gzip stream), touching the end forces a full
+/// decompression, so for those we browse the ISO 9660 bridge — whose structures
+/// sit near the start — instead.
+pub(crate) fn probe_filesystem_opts(
+    reader: &mut dyn SectorReader,
+    prefer_iso: bool,
+) -> Result<(FilesystemType, Option<PrimaryVolumeDescriptor>)> {
+    if prefer_iso {
+        if let Ok(pvd) = PrimaryVolumeDescriptor::read_from(reader) {
+            let fs = if pvd.high_sierra {
+                FilesystemType::HighSierra
+            } else {
+                FilesystemType::Iso9660
+            };
+            return Ok((fs, Some(pvd)));
+        }
+    }
+
     // ── Try UDF first (a UDF/ISO bridge disc should present its UDF tree) ────
     if crate::browse::udf::detect_udf(reader) {
         return Ok((FilesystemType::Udf, None));

@@ -20,6 +20,12 @@ pub enum DiscFormat {
     /// or Wii dump may also carry a plain `.iso` extension; those are detected by
     /// magic and browsed through the same path.
     Nintendo,
+    /// PSP "CISO" compressed ISO (`.cso`) — ISO 9660 split into raw-DEFLATE
+    /// blocks. Distinct from the GameCube `.ciso` handled by [`Self::Nintendo`].
+    Cso,
+    /// gzip-compressed disc image (`.gz`) — typically a PS2 ISO stored as plain
+    /// gzip (e.g. for PCSX2). Decompressed on the fly to a cooked view.
+    Gz,
 }
 
 impl DiscFormat {
@@ -33,6 +39,8 @@ impl DiscFormat {
             "mds" | "mdf" => Some(Self::MdsMdf),
             "gdi" => Some(Self::Gdi),
             "gcm" | "rvz" | "wbfs" | "ciso" | "gcz" | "wia" | "tgc" | "nfs" => Some(Self::Nintendo),
+            "cso" => Some(Self::Cso),
+            "gz" => Some(Self::Gz),
             _ => None,
         }
     }
@@ -46,6 +54,8 @@ impl DiscFormat {
             Self::MdsMdf => "MDS/MDF",
             Self::Gdi => "GDI (Dreamcast GD-ROM)",
             Self::Nintendo => "Nintendo GameCube/Wii",
+            Self::Cso => "CSO (PSP compressed ISO)",
+            Self::Gz => "GZ (gzip-compressed image)",
         }
     }
 
@@ -58,6 +68,8 @@ impl DiscFormat {
             Self::MdsMdf => &["mds", "mdf"],
             Self::Gdi => &["gdi"],
             Self::Nintendo => &["gcm", "rvz", "wbfs", "ciso", "gcz", "wia", "tgc", "nfs"],
+            Self::Cso => &["cso"],
+            Self::Gz => &["gz"],
         }
     }
 }
@@ -66,7 +78,7 @@ impl DiscFormat {
 pub fn supported_extensions() -> &'static [&'static str] {
     &[
         "iso", "toast", "bin", "cue", "chd", "mds", "mdf", "gdi", "gcm", "rvz", "wbfs", "ciso",
-        "gcz", "wia", "tgc", "nfs",
+        "gcz", "wia", "tgc", "nfs", "cso", "gz",
     ]
 }
 

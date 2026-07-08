@@ -47,6 +47,8 @@ pub enum Console {
     ThreeDo,
     /// Philips CD-i.
     CdI,
+    /// Sony PlayStation Portable (UMD).
+    Psp,
 }
 
 impl Console {
@@ -66,6 +68,7 @@ impl Console {
             Self::Wii => "Nintendo Wii",
             Self::ThreeDo => "3DO",
             Self::CdI => "Philips CD-i",
+            Self::Psp => "Sony PlayStation Portable",
         }
     }
 }
@@ -148,6 +151,25 @@ pub fn detect_game_disc(
     reader: &mut dyn SectorReader,
     pvd: Option<&PrimaryVolumeDescriptor>,
 ) -> Option<GameDiscInfo> {
+    detect_game_disc_opts(reader, pvd, true)
+}
+
+/// Highest ISO 9660 LBA whose *content* is considered cheap to read when
+/// `deep_reads` is disabled. On a sequential-access container (a gzip stream),
+/// reading a file's data costs time proportional to its offset; boot files that
+/// sit near the end of a multi-gigabyte image would force a full decompression,
+/// so those probes fall back to metadata that lives near the start.
+const CHEAP_ISO_SECTOR_LIMIT: u32 = 1 << 14; // 16384 sectors ≈ 32 MiB
+
+/// Like [`detect_game_disc`], but when `deep_reads` is `false` the probe avoids
+/// reading file *contents* that live deep in the image (see
+/// [`CHEAP_ISO_SECTOR_LIMIT`]), relying on near-the-start metadata instead. Set
+/// `deep_reads = false` for gzip-compressed images.
+pub fn detect_game_disc_opts(
+    reader: &mut dyn SectorReader,
+    pvd: Option<&PrimaryVolumeDescriptor>,
+    deep_reads: bool,
+) -> Option<GameDiscInfo> {
     // 1. Sector-0 hardware-ID headers (Sega, PC-FX). These sit at the very
     //    start of the data track and do not depend on a filesystem.
     if let Ok(sector0) = reader.read_sector(0) {
@@ -202,9 +224,32 @@ pub fn detect_game_disc(
             });
         }
 
-        // PlayStation 1 / 2: SYSTEM.CNF in the root directory.
-        if let Some(cnf) = read_root_file(reader, pvd, "SYSTEM.CNF") {
-            if let Some(info) = probe_playstation(&cnf, pvd) {
+        // Sony PSP (UMD): UMD_DATA.BIN in the root directory. Its first
+        // `|`-delimited field is the disc ID (e.g. `ULUS-10241`). It lives near
+        // the start, so it is always cheap to read.
+        if let Some(umd) = read_root_file(reader, pvd, "UMD_DATA.BIN") {
+            let text = String::from_utf8_lossy(&umd);
+            let serial = text.split('|').next().map(str::trim).and_then(non_empty);
+            return Some(GameDiscInfo {
+                serial,
+                title: non_empty(pvd.volume_id.trim()),
+                ..GameDiscInfo::just(Console::Psp)
+            });
+        }
+
+        // PlayStation 1 / 2: SYSTEM.CNF (BOOT vs BOOT2) is the authoritative
+        // PS1/PS2 discriminator. Its data often sits near the *end* of a PS2
+        // DVD, so only read it when deep reads are allowed or it is close to the
+        // start; otherwise fall back to cheap near-the-start metadata below.
+        if let Some((cnf_lba, _)) = find_root_entry(reader, pvd, "SYSTEM.CNF") {
+            if deep_reads || cnf_lba < CHEAP_ISO_SECTOR_LIMIT {
+                if let Some(cnf) = read_root_file(reader, pvd, "SYSTEM.CNF") {
+                    if let Some(info) = probe_playstation(&cnf, pvd) {
+                        return Some(info);
+                    }
+                }
+            } else if let Some(info) = probe_playstation_cheap(reader, pvd) {
+                // SYSTEM.CNF present but deep: identify from the PVD + root dir.
                 return Some(info);
             }
         }
@@ -348,6 +393,88 @@ fn probe_playstation(cnf: &[u8], pvd: &PrimaryVolumeDescriptor) -> Option<GameDi
         maker: None,
         version: None,
     })
+}
+
+/// Identify a PlayStation disc without reading SYSTEM.CNF (whose data may sit
+/// near the end of the image). Uses only near-the-start metadata:
+///
+/// - the PVD system/application identifier `PLAYSTATION` confirms the platform;
+/// - the boot-executable filename in the root directory (e.g. `SLUS_201.52`)
+///   yields the serial and region;
+/// - the presence of a UDF bridge (DVD) distinguishes PS2 from a PS1 CD.
+fn probe_playstation_cheap(
+    reader: &mut dyn SectorReader,
+    pvd: &PrimaryVolumeDescriptor,
+) -> Option<GameDiscInfo> {
+    let is_playstation =
+        pvd.system_id.trim() == "PLAYSTATION" || pvd.application_id.trim() == "PLAYSTATION";
+    if !is_playstation {
+        return None;
+    }
+
+    // The boot ELF's filename encodes the serial (SLUS_201.52 → SLUS-20152).
+    let serial = root_file_names(reader, pvd)
+        .into_iter()
+        .find_map(|name| normalize_ps_serial(&name));
+    let region = serial.as_deref().and_then(ps_region_from_serial);
+
+    // A UDF/ISO bridge means a DVD ⇒ PS2; a plain ISO 9660 CD ⇒ PS1. (The UDF
+    // NSR descriptor sits at sectors 16–20, so this stays cheap.)
+    let console = if crate::browse::udf::detect_udf(reader) {
+        Console::Ps2
+    } else {
+        Console::Ps1
+    };
+
+    Some(GameDiscInfo {
+        console,
+        title: non_empty(pvd.volume_id.trim()),
+        region,
+        serial,
+        maker: None,
+        version: None,
+    })
+}
+
+/// Collect the file (non-directory) identifiers in the ISO 9660 root directory,
+/// with the `;version` suffix stripped. Reads only the root extent (near the
+/// start of the image), so it is cheap even on a sequential-access container.
+fn root_file_names(reader: &mut dyn SectorReader, pvd: &PrimaryVolumeDescriptor) -> Vec<String> {
+    let flags_off = if pvd.high_sierra { 24 } else { 25 };
+    let data = match reader.read_bytes(
+        pvd.root_directory_lba as u64 * SECTOR_SIZE,
+        pvd.root_directory_size as usize,
+    ) {
+        Ok(d) => d,
+        Err(_) => return Vec::new(),
+    };
+
+    let mut names = Vec::new();
+    let mut pos = 0usize;
+    while pos < data.len() {
+        let len = data[pos] as usize;
+        if len == 0 {
+            let next = (pos / SECTOR_SIZE as usize + 1) * SECTOR_SIZE as usize;
+            if next <= pos || next >= data.len() {
+                break;
+            }
+            pos = next;
+            continue;
+        }
+        if len < 34 || pos + len > data.len() {
+            break;
+        }
+        let rec = &data[pos..pos + len];
+        let id_len = rec[32] as usize;
+        let is_dir = rec.get(flags_off).map(|&f| f & 0x02 != 0).unwrap_or(false);
+        if !is_dir && 33 + id_len <= rec.len() {
+            let id = &rec[33..33 + id_len];
+            let stem = id.split(|&b| b == b';').next().unwrap_or(id);
+            names.push(String::from_utf8_lossy(stem).into_owned());
+        }
+        pos += len;
+    }
+    names
 }
 
 /// Normalize a PlayStation boot path (`cdrom:\SLUS_005.55;1`) to a canonical
@@ -759,6 +886,27 @@ mod tests {
         let mut r = CursorReader(Cursor::new(img));
         let info = detect_game_disc(&mut r, Some(&pvd)).unwrap();
         assert_eq!(info.console, Console::NeoGeoCd);
+    }
+
+    #[test]
+    fn detects_psp_via_umd_data() {
+        let (img, pvd) = build_iso_with_file("UMD_DATA.BIN", b"ULUS-10241|0001|G|");
+        let mut r = CursorReader(Cursor::new(img));
+        let info = detect_game_disc(&mut r, Some(&pvd)).unwrap();
+        assert_eq!(info.console, Console::Psp);
+        assert_eq!(info.serial.as_deref(), Some("ULUS-10241"));
+    }
+
+    #[test]
+    fn playstation_cheap_identifies_from_root_elf() {
+        // No SYSTEM.CNF content read: identify from the PVD `PLAYSTATION` marker
+        // and the boot-ELF filename in the root directory. No UDF ⇒ PS1.
+        let (img, pvd) = build_iso_with_file("SLUS_201.52", b"\x7fELF");
+        let mut r = CursorReader(Cursor::new(img));
+        let info = probe_playstation_cheap(&mut r, &pvd).unwrap();
+        assert_eq!(info.console, Console::Ps1);
+        assert_eq!(info.serial.as_deref(), Some("SLUS-20152"));
+        assert_eq!(info.region, Some(Region::NtscU));
     }
 
     #[test]

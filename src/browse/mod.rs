@@ -194,6 +194,16 @@ fn open_sector_reader(info: &DiscImageInfo) -> Result<Box<dyn SectorReader>, Fil
 
         DiscFormat::Gdi => crate::gdi::open_gdi_hd_reader(path).map_err(disc_err),
 
+        DiscFormat::Cso => {
+            let reader = crate::cso::CsoSectorReader::open(path).map_err(disc_err)?;
+            Ok(Box::new(reader))
+        }
+
+        DiscFormat::Gz => {
+            let reader = crate::gz::GzSectorReader::open(path).map_err(disc_err)?;
+            Ok(Box::new(reader))
+        }
+
         DiscFormat::Nintendo | DiscFormat::MdsMdf => Err(FilesystemError::Unsupported),
     }
 }
