@@ -18,6 +18,7 @@ thiserror = "2"
 log       = "0.4"
 cue_sheet = "0.3"
 libchdman-rs = { version = "0.288.8", features = ["prebuilt"] }
+encoding_rs = "0.8"   # Shift-JIS (etc.) decoding for Japanese console headers
 
 # optional: only needed with feature "toc"
 sha1   = { version = "0.11", optional = true }

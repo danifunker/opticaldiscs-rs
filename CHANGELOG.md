@@ -21,6 +21,15 @@ All notable changes to this crate are documented here. This project follows
   retained. Verified against *NFL Blitz 2001* and *4x4 Evo* (files in later
   tracks, including subfolder contents, now read with correct size).
 
+### Fixed — PC Engine CD Shift-JIS titles
+
+- **Japanese PC Engine CD-ROM² titles now decode correctly.** The title field
+  (sector 1, offset `0x6A`) is Shift-JIS, but was read with the ASCII-only field
+  helper, which replaced every multi-byte character with a space (e.g.
+  `m   @   X V`). A new Shift-JIS field decoder (via the added `encoding_rs`
+  dependency) now yields the real title — e.g. `夢幻戦士ヴァリスⅢ`. Pure-ASCII
+  titles are unaffected.
+
 ## 0.8.0
 
 > **⚠️ Breaking change.** `DiscFormat` gained `Gdi` and `Nintendo`; `FilesystemType`

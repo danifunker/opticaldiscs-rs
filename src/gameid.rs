@@ -164,7 +164,8 @@ pub fn detect_game_disc(
     // 2. PC Engine CD carries its signature in sector 1, not sector 0.
     if let Ok(sector1) = reader.read_sector(1) {
         if sector1.len() >= 0x37 + 23 && &sector1[0x20..0x20 + 23] == b"PC Engine CD-ROM SYSTEM" {
-            let title = ascii_field(&sector1, 0x6A, 22);
+            // The title (offset 0x6A, 22 bytes) is Shift-JIS on Japanese discs.
+            let title = sjis_field(&sector1, 0x6A, 22);
             return Some(GameDiscInfo {
                 title,
                 ..GameDiscInfo::just(Console::PcEngineCd)
@@ -480,6 +481,21 @@ fn ascii_field(buf: &[u8], off: usize, len: usize) -> Option<String> {
     non_empty(s.trim())
 }
 
+/// Extract a Shift-JIS (code page 932) text field, terminated at the first NUL,
+/// decoded to UTF-8 and trimmed.
+///
+/// Japanese console headers — such as the PC Engine CD-ROM² title — store their
+/// title in Shift-JIS, which [`ascii_field`] would mangle by replacing every
+/// non-ASCII byte with a space. Pure-ASCII fields decode identically, so this is
+/// a safe superset. Returns `None` when the field is out of range, or empty
+/// after trimming.
+fn sjis_field(buf: &[u8], off: usize, len: usize) -> Option<String> {
+    let slice = buf.get(off..off + len)?;
+    let end = slice.iter().position(|&b| b == 0).unwrap_or(slice.len());
+    let (decoded, _, _) = encoding_rs::SHIFT_JIS.decode(&slice[..end]);
+    non_empty(decoded.trim())
+}
+
 /// The first non-empty line of a string (for multi-line copyright fields).
 fn first_line(s: &str) -> String {
     s.lines()
@@ -594,6 +610,37 @@ mod tests {
         let info = detect_game_disc(&mut r, None).unwrap();
         assert_eq!(info.console, Console::PcEngineCd);
         assert_eq!(info.title.as_deref(), Some("HUGAME"));
+    }
+
+    #[test]
+    fn detects_pcengine_shift_jis_title() {
+        // A Japanese PC Engine CD title stored in Shift-JIS at 0x6A: the bytes
+        // for 夢幻戦士ヴァリスⅢ (Mugen Senshi Valis III), space-padded.
+        let title_sjis: &[u8] = &[
+            0x96, 0xb2, 0x8c, 0xb6, 0x90, 0xed, 0x8e, 0x6d, 0x83, 0x94, 0x83, 0x40, 0x83, 0x8a,
+            0x83, 0x58, 0x87, 0x56, 0x20, 0x20, 0x20, 0x20,
+        ];
+        let mut img = vec![0u8; 4 * SECTOR_SIZE as usize];
+        let s1 = SECTOR_SIZE as usize;
+        img[s1 + 0x20..s1 + 0x20 + 23].copy_from_slice(b"PC Engine CD-ROM SYSTEM");
+        img[s1 + 0x6A..s1 + 0x6A + title_sjis.len()].copy_from_slice(title_sjis);
+        let mut r = CursorReader(Cursor::new(img));
+        let info = detect_game_disc(&mut r, None).unwrap();
+        assert_eq!(info.console, Console::PcEngineCd);
+        assert_eq!(info.title.as_deref(), Some("夢幻戦士ヴァリスⅢ"));
+    }
+
+    #[test]
+    fn sjis_field_decodes_and_falls_back_to_ascii() {
+        // ASCII decodes unchanged; a Shift-JIS run decodes to Japanese; an
+        // all-space / empty field yields None.
+        assert_eq!(sjis_field(b"HELLO\0junk", 0, 10).as_deref(), Some("HELLO"));
+        assert_eq!(
+            sjis_field(&[0x83, 0x8a, 0x83, 0x58, 0x00], 0, 5).as_deref(),
+            Some("リス")
+        );
+        assert_eq!(sjis_field(b"      ", 0, 6), None);
+        assert_eq!(sjis_field(b"AB", 0, 8), None); // out of range
     }
 
     #[test]

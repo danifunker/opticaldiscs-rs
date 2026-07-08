@@ -700,6 +700,7 @@ version = "0.9.0"
 dependencies = [
  "base64",
  "cue_sheet",
+ "encoding_rs",
  "env_logger",
  "libchdman-rs",
  "log",
