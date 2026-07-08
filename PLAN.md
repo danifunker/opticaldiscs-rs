@@ -518,9 +518,9 @@ if the repo will be public, or keep them in a separate `test-fixtures` branch.
 *All phases (0–9) are complete and shipped (current release `0.7.0`);
 EFS / SGI support landed as `0.3.0` (see [docs/EFS_Implementation.md](docs/EFS_Implementation.md)).
 UDF support (physical-partition layout, UDF 1.02–2.01: DVDs, DVD-Video, data discs)
-landed as `0.7.0`. Future versions may add UDF 2.50+ metadata-partition support
-(Blu-ray / UDF Bridge metadata discs — currently detected but not yet browsable),
-the MDS/MDF format, and Blu-ray metadata.*
+landed as `0.7.0`; UDF 2.50+ metadata-partition support (Blu-ray / BDMV discs)
+landed as `0.8.0`. Future versions may add UDF sparable/virtual partitions and
+the MDS/MDF format.*
 
 *Video-game optical-disc support (PlayStation, Sega, Nintendo GameCube/Wii, 3DO,
 CD-i, and more) is planned — see [docs/GameDiscs_Implementation.md](docs/GameDiscs_Implementation.md)

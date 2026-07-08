@@ -10,6 +10,20 @@ All notable changes to this crate are documented here. This project follows
 > either enum must handle them (or add a wildcard arm). `DiscImageInfo` also gained
 > a `game: Option<GameDiscInfo>` field.
 
+### Added — UDF 2.50 (Blu-ray) metadata partitions
+
+- **UDF metadata-partition support** (`browse/udf.rs`): the UDF browser now
+  resolves every on-disc address as a `(logical block number, partition
+  reference)` pair through the Logical Volume Descriptor's partition maps. Type-2
+  `*UDF Metadata Partition` maps (used by Blu-ray / UDF 2.50+) are translated
+  through the metadata file's extents into the underlying physical partition, so
+  BDMV discs — whose file entries and directories live in the metadata partition
+  while file data lives in the physical partition — now browse. Unknown type-2
+  maps (virtual/sparable) are kept index-aligned and error only if referenced.
+- **Extent-aware `read_file_range`** for UDF: a partial read now touches only the
+  overlapping extents instead of loading the whole file, so seeking into a
+  multi-gigabyte Blu-ray `.m2ts` stream is cheap.
+
 ### Added — video-game optical disc support
 
 - **Game-disc identification** (`gameid.rs`): a new `GameDiscInfo { console, serial,
