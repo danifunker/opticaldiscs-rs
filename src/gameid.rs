@@ -49,6 +49,8 @@ pub enum Console {
     CdI,
     /// Sony PlayStation Portable (UMD).
     Psp,
+    /// Sony PlayStation 3 (Blu-ray).
+    Ps3,
     /// Microsoft Xbox (XDVDFS).
     Xbox,
 }
@@ -71,6 +73,7 @@ impl Console {
             Self::ThreeDo => "3DO",
             Self::CdI => "Philips CD-i",
             Self::Psp => "Sony PlayStation Portable",
+            Self::Ps3 => "Sony PlayStation 3",
             Self::Xbox => "Microsoft Xbox",
         }
     }
@@ -229,6 +232,26 @@ pub fn detect_game_disc_opts(
             return Some(GameDiscInfo {
                 title: non_empty(pvd.volume_id.trim()),
                 ..GameDiscInfo::just(Console::AmigaCd32)
+            });
+        }
+
+        // Sony PS3: PS3_DISC.SFB in the root, with title/serial in
+        // PS3_GAME/PARAM.SFO. The filesystem metadata is plaintext even on
+        // encrypted (redump) dumps, so this works without the disc key.
+        if find_root_entry(reader, pvd, "PS3_DISC.SFB").is_some() {
+            let sfo = read_subdir_file(reader, pvd, "PS3_GAME", "PARAM.SFO");
+            let (title, title_id) = sfo
+                .as_deref()
+                .map(parse_sfo_title_and_id)
+                .unwrap_or((None, None));
+            let region = title_id.as_deref().and_then(ps3_region_from_serial);
+            return Some(GameDiscInfo {
+                console: Console::Ps3,
+                serial: title_id,
+                title: title.or_else(|| non_empty(pvd.volume_id.trim())),
+                region,
+                maker: None,
+                version: None,
             });
         }
 
@@ -629,6 +652,75 @@ fn ps_region_from_serial(serial: &str) -> Option<Region> {
     }
 }
 
+/// Derive a coarse region from a PS3 title ID (e.g. `BCUS98147`), keyed on the
+/// third/fourth letters of the prefix.
+fn ps3_region_from_serial(serial: &str) -> Option<Region> {
+    let up = serial.to_uppercase();
+    match up.get(2..4)? {
+        "US" => Some(Region::NtscU),
+        "ES" => Some(Region::Pal),
+        "JS" | "JM" => Some(Region::NtscJ),
+        "AS" => Some(Region::Asia),
+        "KS" => Some(Region::Korea),
+        _ => None,
+    }
+}
+
+// ── PlayStation SFO parsing ───────────────────────────────────────────────────
+
+/// Parse a PS3/PSP/PS Vita `PARAM.SFO` and return `(TITLE, TITLE_ID)`.
+///
+/// SFO layout (little-endian): header at 0x00 (magic `\0PSF`, key-table start at
+/// 0x08, data-table start at 0x0C, entry count at 0x10), then a 16-byte index
+/// entry per key: key offset (u16) into the key table, data format (u16), data
+/// length (u32), max length (u32), data offset (u32) into the data table. String
+/// values (format `0x0204`) are UTF-8, NUL-terminated.
+fn parse_sfo_title_and_id(data: &[u8]) -> (Option<String>, Option<String>) {
+    let none = (None, None);
+    if data.len() < 0x14 || &data[0..4] != b"\0PSF" {
+        return none;
+    }
+    let key_start = u32::from_le_bytes(data[0x08..0x0C].try_into().unwrap()) as usize;
+    let data_start = u32::from_le_bytes(data[0x0C..0x10].try_into().unwrap()) as usize;
+    let count = u32::from_le_bytes(data[0x10..0x14].try_into().unwrap()) as usize;
+
+    let (mut title, mut title_id) = (None, None);
+    for i in 0..count.min(1024) {
+        let e = 0x14 + i * 0x10;
+        if e + 0x10 > data.len() {
+            break;
+        }
+        let key_off = u16::from_le_bytes(data[e..e + 2].try_into().unwrap()) as usize;
+        let data_len = u32::from_le_bytes(data[e + 4..e + 8].try_into().unwrap()) as usize;
+        let data_off = u32::from_le_bytes(data[e + 0x0C..e + 0x10].try_into().unwrap()) as usize;
+
+        let key = sfo_cstr(data, key_start + key_off);
+        let val_start = data_start + data_off;
+        let val = data
+            .get(val_start..val_start + data_len)
+            .map(|b| {
+                let end = b.iter().position(|&c| c == 0).unwrap_or(b.len());
+                String::from_utf8_lossy(&b[..end]).trim().to_string()
+            })
+            .filter(|s| !s.is_empty());
+        match key.as_str() {
+            "TITLE" => title = val,
+            "TITLE_ID" => title_id = val,
+            _ => {}
+        }
+    }
+    (title, title_id)
+}
+
+/// Read a NUL-terminated ASCII string from `data` at `off`.
+fn sfo_cstr(data: &[u8], off: usize) -> String {
+    let Some(slice) = data.get(off..) else {
+        return String::new();
+    };
+    let end = slice.iter().position(|&c| c == 0).unwrap_or(slice.len());
+    String::from_utf8_lossy(&slice[..end]).into_owned()
+}
+
 // ── ISO 9660 root-directory helpers ──────────────────────────────────────────
 
 /// Read a named file from the ISO 9660 root directory, returning its bytes.
@@ -653,19 +745,65 @@ fn read_root_file(
         .ok()
 }
 
-/// Locate a directory record for `name` in the root directory extent.
+/// Locate a **file** record for `name` in the root directory extent.
 /// Returns `(extent_lba, data_length)` on a match.
 fn find_root_entry(
     reader: &mut dyn SectorReader,
     pvd: &PrimaryVolumeDescriptor,
     name: &str,
 ) -> Option<(u32, u32)> {
-    let flags_off = if pvd.high_sierra { 24 } else { 25 };
+    find_entry_in_extent(
+        reader,
+        pvd.root_directory_lba,
+        pvd.root_directory_size,
+        name,
+        pvd.high_sierra,
+        false,
+    )
+}
+
+/// Read a file from a first-level subdirectory of the root (e.g.
+/// `PS3_GAME/PARAM.SFO`). Returns `None` if either component is missing or a
+/// read fails; sizes above 8 MiB are rejected as implausible.
+fn read_subdir_file(
+    reader: &mut dyn SectorReader,
+    pvd: &PrimaryVolumeDescriptor,
+    dir_name: &str,
+    file_name: &str,
+) -> Option<Vec<u8>> {
+    let (dir_lba, dir_size) = find_entry_in_extent(
+        reader,
+        pvd.root_directory_lba,
+        pvd.root_directory_size,
+        dir_name,
+        pvd.high_sierra,
+        true,
+    )?;
+    let (lba, size) =
+        find_entry_in_extent(reader, dir_lba, dir_size, file_name, pvd.high_sierra, false)?;
+    if size == 0 || size > 8 * 1024 * 1024 {
+        return None;
+    }
+    reader
+        .read_bytes(lba as u64 * SECTOR_SIZE, size as usize)
+        .ok()
+}
+
+/// Scan an ISO 9660 directory extent at `(lba, size)` for an entry named `name`
+/// (case-insensitive, ignoring the `;version` suffix), matching a directory when
+/// `want_dir` is set or a file otherwise. Returns the match's
+/// `(extent_lba, data_length)`.
+fn find_entry_in_extent(
+    reader: &mut dyn SectorReader,
+    lba: u32,
+    size: u32,
+    name: &str,
+    high_sierra: bool,
+    want_dir: bool,
+) -> Option<(u32, u32)> {
+    let flags_off = if high_sierra { 24 } else { 25 };
     let data = reader
-        .read_bytes(
-            pvd.root_directory_lba as u64 * SECTOR_SIZE,
-            pvd.root_directory_size as usize,
-        )
+        .read_bytes(lba as u64 * SECTOR_SIZE, size as usize)
         .ok()?;
 
     let mut pos = 0usize;
@@ -685,15 +823,14 @@ fn find_root_entry(
         }
         let rec = &data[pos..pos + len];
         let id_len = rec[32] as usize;
-        // Directory bit — skip directories, we only match files here.
         let is_dir = rec.get(flags_off).map(|&f| f & 0x02 != 0).unwrap_or(false);
-        if !is_dir && 33 + id_len <= rec.len() {
+        if is_dir == want_dir && 33 + id_len <= rec.len() {
             let id = &rec[33..33 + id_len];
             let stem = id.split(|&b| b == b';').next().unwrap_or(id);
             if stem.eq_ignore_ascii_case(name.as_bytes()) {
-                let lba = u32::from_le_bytes(rec[2..6].try_into().ok()?);
+                let elba = u32::from_le_bytes(rec[2..6].try_into().ok()?);
                 let dsize = u32::from_le_bytes(rec[10..14].try_into().ok()?);
-                return Some((lba, dsize));
+                return Some((elba, dsize));
             }
         }
         pos += len;
@@ -1048,6 +1185,56 @@ mod tests {
         }
         b.extend_from_slice(&[0, 0, b'X', 0]);
         assert_eq!(decode_utf16le(&b), "Halo");
+    }
+
+    #[test]
+    fn detects_ps3_via_sfb_and_parses_sfo() {
+        // Root with PS3_DISC.SFB → identified as PS3; title falls back to the
+        // volume id when PS3_GAME/PARAM.SFO is absent.
+        let (img, pvd) = build_iso_with_file("PS3_DISC.SFB", b".SFB\x00\x01");
+        let mut r = CursorReader(Cursor::new(img));
+        let info = detect_game_disc(&mut r, Some(&pvd)).unwrap();
+        assert_eq!(info.console, Console::Ps3);
+        assert_eq!(info.title.as_deref(), Some("GAME")); // volume_id fallback
+    }
+
+    #[test]
+    fn parses_param_sfo_title_and_id() {
+        // Build a minimal SFO with TITLE and TITLE_ID string entries.
+        let keys = b"TITLE\0TITLE_ID\0";
+        let title = b"Test Game\0";
+        let title_id = b"BLUS30782\0";
+        let key_start = 0x14 + 2 * 0x10; // header + 2 index entries
+        let data_start = key_start + keys.len();
+
+        let mut sfo = Vec::new();
+        sfo.extend_from_slice(b"\0PSF");
+        sfo.extend_from_slice(&0x0101u32.to_le_bytes()); // version
+        sfo.extend_from_slice(&(key_start as u32).to_le_bytes());
+        sfo.extend_from_slice(&(data_start as u32).to_le_bytes());
+        sfo.extend_from_slice(&2u32.to_le_bytes()); // entry count
+                                                    // Entry 0: TITLE
+        sfo.extend_from_slice(&0u16.to_le_bytes()); // key offset
+        sfo.extend_from_slice(&0x0204u16.to_le_bytes()); // utf-8
+        sfo.extend_from_slice(&(title.len() as u32).to_le_bytes());
+        sfo.extend_from_slice(&(title.len() as u32).to_le_bytes());
+        sfo.extend_from_slice(&0u32.to_le_bytes()); // data offset
+                                                    // Entry 1: TITLE_ID
+        sfo.extend_from_slice(&6u16.to_le_bytes()); // "TITLE_ID" starts at key+6
+        sfo.extend_from_slice(&0x0204u16.to_le_bytes());
+        sfo.extend_from_slice(&(title_id.len() as u32).to_le_bytes());
+        sfo.extend_from_slice(&(title_id.len() as u32).to_le_bytes());
+        sfo.extend_from_slice(&(title.len() as u32).to_le_bytes()); // data offset
+        sfo.extend_from_slice(keys);
+        sfo.extend_from_slice(title);
+        sfo.extend_from_slice(title_id);
+
+        let (t, id) = parse_sfo_title_and_id(&sfo);
+        assert_eq!(t.as_deref(), Some("Test Game"));
+        assert_eq!(id.as_deref(), Some("BLUS30782"));
+        assert_eq!(ps3_region_from_serial("BLUS30782"), Some(Region::NtscU));
+        assert_eq!(ps3_region_from_serial("BLES01234"), Some(Region::Pal));
+        assert_eq!(ps3_region_from_serial("BLJM60001"), Some(Region::NtscJ));
     }
 
     #[test]

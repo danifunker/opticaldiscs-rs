@@ -5,6 +5,18 @@ All notable changes to this crate are documented here. This project follows
 
 ## 0.9.0
 
+### Added — PlayStation 3 identification
+
+- **PS3 disc ISOs are identified** (`Console::Ps3`). PS3 discs already *browsed*
+  through the ISO 9660 bridge — its directory metadata is plaintext even on
+  encrypted (redump) dumps, so no disc key is needed — but were unidentified.
+  Detection now keys on `PS3_DISC.SFB` in the root and parses
+  `PS3_GAME/PARAM.SFO` for the display title and title ID (serial), deriving the
+  region from the serial prefix. A new `PARAM.SFO` parser and a
+  subdirectory-file reader support this. Fully **decrypted** ISOs also read file
+  contents; encrypted redump ISOs still browse and identify (only file *data*
+  regions are ciphertext).
+
 ### Added — Xbox XDVDFS browsing + identification
 
 - **Xbox / Xbox 360 XDVDFS support** (`browse/xdvdfs.rs`): a new

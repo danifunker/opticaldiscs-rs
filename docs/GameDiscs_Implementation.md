@@ -443,8 +443,10 @@ sector reader, so it works on BIN·CUE / CHD / ISO immediately. Highest value / 
 - [x] volume/dir/entry parse, avatar-pointer file reads; detection + `GameDiscInfo`
 
 ### Phase G6 — deferred `[ ]`
-Xbox XDVDFS `[x]` (0.9.0); PS3 UDF 2.50 (ties into the existing planned UDF 2.50
-metadata-partition work — needs per-disc decryption keys); PS4 (encrypted `.pkg`); Jaguar CD.
+Xbox XDVDFS `[x]` (0.9.0). PS3 `[x]` (0.9.0): disc ISOs browse via the plaintext ISO 9660
+bridge and are identified from `PS3_DISC.SFB` + `PS3_GAME/PARAM.SFO` — decrypted ISOs also read
+file data; encrypted redump ISOs browse/identify but their data regions stay ciphertext (no
+dkey support). PS4 (encrypted `.pkg`); Jaguar CD.
 Wii U (WUD/WUX, encrypted); Switch (NSP/XCI, encrypted); 3DS (CCI/CIA, encrypted) all require
 title keys and are out of scope for the disc-image browser. NKit-processed GC/Wii images are
 detected and refused (they need reconstruction `nod` does not perform).
