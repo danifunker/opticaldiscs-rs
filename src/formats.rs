@@ -35,6 +35,10 @@ pub enum DiscFormat {
     /// Named for the container (not the Philips CD-i filesystem in
     /// [`FilesystemType::Cdi`], which is orthogonal).
     DiscJuggler,
+    /// DAEMON Tools image (`.mdx`) — encrypted+compressed descriptor with
+    /// zlib-compressed track data. Browsable only when the crate is built with
+    /// the `mdx` feature (it pulls in a crypto stack).
+    Mdx,
 }
 
 impl DiscFormat {
@@ -53,6 +57,7 @@ impl DiscFormat {
             "ccd" => Some(Self::CloneCd),
             "nrg" => Some(Self::Nrg),
             "cdi" => Some(Self::DiscJuggler),
+            "mdx" => Some(Self::Mdx),
             _ => None,
         }
     }
@@ -71,6 +76,7 @@ impl DiscFormat {
             Self::CloneCd => "CloneCD (CCD/IMG)",
             Self::Nrg => "Nero (NRG)",
             Self::DiscJuggler => "DiscJuggler (CDI)",
+            Self::Mdx => "DAEMON Tools (MDX)",
         }
     }
 
@@ -88,6 +94,7 @@ impl DiscFormat {
             Self::CloneCd => &["ccd", "img", "sub"],
             Self::Nrg => &["nrg"],
             Self::DiscJuggler => &["cdi"],
+            Self::Mdx => &["mdx"],
         }
     }
 }
@@ -96,7 +103,7 @@ impl DiscFormat {
 pub fn supported_extensions() -> &'static [&'static str] {
     &[
         "iso", "toast", "bin", "cue", "chd", "mds", "mdf", "gdi", "gcm", "rvz", "wbfs", "ciso",
-        "gcz", "wia", "tgc", "nfs", "cso", "gz", "ccd", "nrg", "cdi",
+        "gcz", "wia", "tgc", "nfs", "cso", "gz", "ccd", "nrg", "cdi", "mdx",
     ]
 }
 

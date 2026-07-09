@@ -178,7 +178,35 @@ impl DiscImageInfo {
             DiscFormat::Nrg => Self::probe_nrg(path),
             DiscFormat::MdsMdf => Self::probe_mds(path),
             DiscFormat::DiscJuggler => Self::probe_discjuggler(path),
+            DiscFormat::Mdx => Self::probe_mdx(path),
         }
+    }
+
+    /// Probe a DAEMON Tools (`.mdx`) image via its first data track.
+    #[cfg(feature = "mdx")]
+    fn probe_mdx(path: &Path) -> Result<Self> {
+        let tracks = crate::mdx::parse_mdx(path)?;
+        let data = tracks
+            .iter()
+            .find(|t| t.is_data)
+            .ok_or(OpticaldiscsError::NoDataTrack)?;
+        let mut reader = crate::mdx::MdxSectorReader::open(data)?;
+        Self::build(
+            path,
+            DiscFormat::Mdx,
+            &mut reader,
+            #[cfg(feature = "toc")]
+            None,
+        )
+    }
+
+    /// Without the `mdx` feature, `.mdx` files are recognised but not browsable.
+    #[cfg(not(feature = "mdx"))]
+    fn probe_mdx(path: &Path) -> Result<Self> {
+        Err(OpticaldiscsError::UnsupportedFormat(format!(
+            "MDX support was not compiled in (rebuild with `--features mdx`): {}",
+            path.display()
+        )))
     }
 
     /// Probe a GameCube or Wii disc image via `nod`. Returns `None` when `path`

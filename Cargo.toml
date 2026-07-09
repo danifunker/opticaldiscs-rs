@@ -12,6 +12,10 @@ categories = ["filesystem", "encoding", "parser-implementations"]
 default = []
 toc    = ["dep:sha1", "dep:base64"]   # MusicBrainz + FreeDB DiscID calculation
 drives = []                            # physical optical drive enumeration
+# DAEMON Tools MDX (.mdx / MDSv2): the descriptor is always AES-256-encrypted and
+# zlib-compressed, so this optional feature pulls in a small crypto stack. Left off
+# by default to keep the base build dependency-light.
+mdx    = ["dep:aes", "dep:pbkdf2", "dep:ripemd"]
 
 [dependencies]
 thiserror = "2"
@@ -25,6 +29,11 @@ flate2 = "1"          # deflate/gzip: PSP CSO blocks and gzip-compressed ISOs
 sha1   = { version = "0.11", optional = true }
 base64 = { version = "0.22", optional = true }
 nod = "1.4"
+
+# optional: only needed with feature "mdx" (DAEMON Tools MDX crypto stack)
+aes    = { version = "0.8", optional = true }
+pbkdf2 = { version = "0.12", optional = true, default-features = false, features = ["hmac"] }
+ripemd = { version = "0.1", optional = true }
 
 [dev-dependencies]
 tempfile = "3"

@@ -80,6 +80,10 @@ pub mod nrg;
 // DiscJuggler (.cdi) container
 pub mod discjuggler;
 
+// DAEMON Tools (.mdx) container — optional (pulls in a crypto stack)
+#[cfg(feature = "mdx")]
+pub mod mdx;
+
 // Phase 7 (HFS metadata — not browsing, see browse/)
 pub mod apm;
 pub mod hfs;

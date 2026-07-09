@@ -7,6 +7,22 @@ All notable changes to this crate are documented here. This project follows
 
 ### Added — more disc-image containers
 
+- **DAEMON Tools (`.mdx`)** (`mdx.rs`, opt-in `mdx` feature): a new
+  `DiscFormat::Mdx` browses DAEMON Tools "MDSv2" images. Unlike Alcohol `.mds`,
+  an MDX **always** stores its descriptor AES-256-encrypted + zlib-compressed and
+  its track data as zlib-compressed sector groups, so support pulls in a small
+  crypto stack (`aes`, `pbkdf2`, `ripemd`) and is gated behind the off-by-default
+  `mdx` feature — the base build stays dependency-light, and `.mdx` files are
+  recognised but reported unbrowsable without it. The descriptor decrypt is a
+  TrueCrypt-derived scheme (salt-unshuffle → PBKDF2/RIPE-MD-160 → AES-256 in a
+  custom CBC-with-de-whitening), and an `MdxSectorReader` inflates sector groups
+  on the fly (none/RLE/deflate). Encrypted *track data* (MDSv2 AES-XTS) is
+  detected and rejected cleanly. Ported from cdemu/libmirage `image-mdx`.
+  (Descriptor decrypt verified against real AKAI sampler `.mdx` images — magic,
+  key CRC, and inflate sizes all match — which detect as the MDX container but
+  carry a proprietary non-ISO filesystem; the full browse path plus the
+  none/RLE/deflate reader are covered by an end-to-end synthetic test that builds
+  a correctly-encrypted, compressed MDX wrapping an ISO 9660 volume.)
 - **DiscJuggler (`.cdi`)** (`discjuggler.rs`): a new `DiscFormat::DiscJuggler`
   parses the end-anchored, variable-length track descriptor (last 4 bytes are its
   length) and browses the `.cdi` data through per-track sector geometry. Named

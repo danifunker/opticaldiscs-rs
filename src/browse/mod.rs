@@ -275,6 +275,19 @@ fn open_sector_reader(info: &DiscImageInfo) -> Result<Box<dyn SectorReader>, Fil
             )))
         }
 
+        #[cfg(feature = "mdx")]
+        DiscFormat::Mdx => {
+            let tracks = crate::mdx::parse_mdx(path).map_err(disc_err)?;
+            let data = tracks.iter().find(|t| t.is_data).ok_or_else(|| {
+                FilesystemError::InvalidData("no data track in .mdx image".into())
+            })?;
+            let reader = crate::mdx::MdxSectorReader::open(data).map_err(disc_err)?;
+            Ok(Box::new(reader))
+        }
+
+        #[cfg(not(feature = "mdx"))]
+        DiscFormat::Mdx => Err(FilesystemError::Unsupported),
+
         DiscFormat::Nintendo => Err(FilesystemError::Unsupported),
     }
 }
