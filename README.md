@@ -7,8 +7,11 @@
 Format-agnostic optical disc image reading and filesystem browsing for Rust.
 
 Provides a unified `SectorReader` abstraction that handles the cooked/raw sector
-translation across three container formats — **ISO**, **BIN/CUE**, and **CHD** — with
-filesystem browsers for **ISO 9660**, **HFS**, **HFS+**, and **SGI EFS** on top.
+translation across container formats — **ISO**, **BIN/CUE**, **CHD**, **CloneCD**,
+**Nero (NRG)**, **Alcohol 120% (MDS/MDF)**, **DiscJuggler (CDI)**, **DAEMON Tools
+(MDX)**, **PSP CSO**, **gzip**, and **Nintendo** (GameCube/Wii) — with filesystem
+browsers for **ISO 9660**, **UDF**, **HFS/HFS+**, **SGI EFS**, and
+[many more](#features) on top.
 
 > **Status:** Published on [crates.io](https://crates.io/crates/opticaldiscs). Disc
 > reading, detection, and filesystem browsing are complete and in production use;
@@ -45,6 +48,12 @@ for the full list of supported targets, glibc floors, and escape hatches.
 | ISO sector reader | ✓ |
 | BIN/CUE sector reader (raw 2352-byte) | ✓ |
 | CHD sector reader (via libchdman-rs) | ✓ |
+| PSP `.cso` (CISOv1) + gzip-compressed (`.gz`) image readers | ✓ (since 0.9.0) |
+| CloneCD (`.ccd` / `.img` / `.sub`) container | ✓ (since 0.9.0) |
+| Nero (`.nrg`) container | ✓ (since 0.9.0) |
+| Alcohol 120% (`.mds` / `.mdf`) container | ✓ (since 0.9.0) |
+| DiscJuggler (`.cdi`) container — incl. Dreamcast GD-ROM absolute-LBA rebasing | ✓ (since 0.9.0) |
+| DAEMON Tools (`.mdx`) container — encrypted + zlib-compressed descriptor | ✓ (`mdx` feature, since 0.9.0) |
 | Disc format + filesystem auto-detection | ✓ |
 | ISO 9660 filesystem browser | ✓ |
 | ISO 9660 PVD date/time metadata (creation/modification/expiration/effective) | ✓ (since 0.4.4) |
@@ -90,7 +99,7 @@ for entry in fs.list_directory(&root)? {
 opticaldiscs = "0.4"
 
 # with optional features
-opticaldiscs = { version = "0.4", features = ["toc", "drives"] }
+opticaldiscs = { version = "0.4", features = ["toc", "drives", "mdx"] }
 ```
 
 To track unreleased changes, depend on the git repository instead:
@@ -105,6 +114,10 @@ opticaldiscs = { git = "https://github.com/danifunker/opticaldiscs-rs" }
 |---|---|---|
 | `toc` | `DiscTOC`, MusicBrainz DiscID, FreeDB ID | `sha1`, `base64` |
 | `drives` | `list_drives()` — enumerate physical optical drives | — |
+| `mdx` | DAEMON Tools `.mdx` browsing (its descriptor is always AES-256-encrypted + zlib-compressed) | `aes`, `pbkdf2`, `ripemd` |
+
+Without the `mdx` feature, `.mdx` files are still *recognised* (`DiscFormat::Mdx`)
+but report as unbrowsable rather than pulling in the crypto stack.
 
 ## Used By
 

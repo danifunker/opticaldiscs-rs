@@ -1,14 +1,107 @@
-# Downstream Upgrade — Game-Disc Support (0.8)
+# Downstream Upgrade Guide
 
-This guide is for projects that depend on `opticaldiscs` and want to pick up the
-video-game optical-disc support added in **0.8**: console/game identification plus
-browsing for Nintendo GameCube & Wii, Sega Dreamcast (GD-ROM), Philips CD-i, and 3DO.
+This guide is for projects that depend on `opticaldiscs`. It covers two upgrade waves:
+
+- [**0.9 — more disc-image containers**](#09--more-disc-image-containers): CloneCD,
+  Nero (NRG), Alcohol 120% (MDS/MDF), DiscJuggler (CDI), DAEMON Tools (MDX), PSP CSO,
+  and gzip-compressed images.
+- [**0.8 — game-disc support**](#08--game-disc-support): console/game identification
+  plus browsing for Nintendo GameCube & Wii, Sega Dreamcast (GD-ROM), Philips CD-i, 3DO.
 
 If you maintain a consuming project (a CLI, GUI, ripper, artwork tool, …), hand the
-[**pickup prompt**](#pickup-prompt-paste-into-the-downstream-repo) at the bottom to an
-agent in that repo, or follow the checklist yourself.
+relevant **pickup prompt** to an agent in that repo, or follow the checklist yourself.
 
 ---
+
+# 0.9 — More disc-image containers
+
+**0.9** adds several new container formats. Every one browses through the existing
+`open_disc_filesystem(&info)?` path and returns the usual `Box<dyn Filesystem>` — the
+only source-breaking change is, again, new `DiscFormat` enum variants.
+
+## Will it "just work"? (0.9)
+
+| Aspect | Automatic? | Notes |
+|---|---|---|
+| Opening/browsing the new containers | ✅ | `DiscImageInfo::open()` + `open_disc_filesystem()` detect and browse them; listing/reading are unchanged |
+| New file extensions in open dialogs | ✅ | already in `formats::supported_extensions()` (`ccd`, `img`, `sub`, `nrg`, `mds`, `mdf`, `cdi`, `cso`, `gz`) |
+| Exhaustive `match` on `DiscFormat` | ❌ **breaks** | new variants → add arms or a `_ =>` wildcard (compile error until you do) |
+| Browsing `.mdx` | ⚠️ opt-in | requires the new `mdx` Cargo feature (a crypto stack); without it, `.mdx` is recognised but reported unbrowsable |
+
+### New `DiscFormat` variants (source-breaking for exhaustive matches)
+- `DiscFormat::Cso` — PSP `.cso` (CISOv1) compressed ISO
+- `DiscFormat::Gz` — gzip-compressed disc image (`.gz`, typically a PS2 ISO)
+- `DiscFormat::CloneCd` — CloneCD (`.ccd` + `.img` + optional `.sub`)
+- `DiscFormat::Nrg` — Nero (`.nrg`)
+- `DiscFormat::MdsMdf` — Alcohol 120% (`.mds` / `.mdf`) — previously a stub, now implemented
+- `DiscFormat::DiscJuggler` — DiscJuggler (`.cdi`); handles Dreamcast GD-ROM rips whose
+  ISO 9660 volume uses absolute directory LBAs
+- `DiscFormat::Mdx` — DAEMON Tools (`.mdx`); browsable only with the `mdx` feature (see below)
+
+No new `FilesystemType` variants — these containers wrap the filesystems you already
+handle (ISO 9660, UDF, etc.).
+
+### The `mdx` feature (optional crypto stack)
+An MDX descriptor is **always** AES-256-encrypted and zlib-compressed, so support
+pulls in `aes`, `pbkdf2`, and `ripemd`. It is **off by default**:
+
+```toml
+opticaldiscs = { version = "0.9", features = ["mdx"] }
+```
+
+- **With** `mdx`: `.mdx` images decrypt, decompress, and browse like any other container.
+  Encrypted *track data* (MDSv2 AES-XTS) is detected and rejected with a clear error.
+- **Without** `mdx`: `.mdx` files are still detected as `DiscFormat::Mdx`, but
+  `DiscImageInfo::open()` / `open_disc_filesystem()` return an "unsupported" error
+  instead of pulling in the crypto crates.
+
+`DiscFormat::Mdx` exists in the enum regardless of the feature, so your `match`
+arms compile either way.
+
+### Upgrade checklist (0.9)
+1. Bump the dependency to `0.9` (keep existing feature flags; add `"mdx"` if you want
+   DAEMON Tools browsing).
+2. `cargo build` and fix every non-exhaustive-match error on `DiscFormat` (add arms
+   for the variants above or a `_ =>` wildcard, matching how you treat unknown formats).
+3. File dialogs / format filters: keep using `formats::supported_extensions()` so the
+   new extensions appear automatically.
+4. Browsing needs no changes — `open_disc_filesystem(&info)?` then `root()` /
+   `list_directory()` / `read_file()` work identically for the new containers.
+5. Run the test suite to confirm nothing else broke from the enum changes.
+
+### Pickup prompt (0.9 — paste into the downstream repo)
+
+```
+The `opticaldiscs` crate this project depends on gained new disc-image container
+formats in 0.9. Integrate it here.
+
+WHAT'S NEW:
+- New `DiscFormat` variants: `Cso`, `Gz`, `CloneCd`, `Nrg`, `MdsMdf`, `DiscJuggler`, `Mdx`.
+  These are container formats; there are NO new `FilesystemType` variants.
+- `browse::open_disc_filesystem(&info)` transparently browses all of them and still
+  returns `Box<dyn Filesystem>`; listing/reading are unchanged.
+- `.mdx` (DAEMON Tools) browsing is behind an optional `mdx` Cargo feature (it pulls in
+  aes/pbkdf2/ripemd). Without the feature, `.mdx` is detected but reported unbrowsable.
+- New recognized extensions (already in `formats::supported_extensions()`):
+  ccd, img, sub, nrg, mds, mdf, cdi, cso, gz.
+
+TASKS:
+1. Set `opticaldiscs = "0.9"` in Cargo.toml (keep existing feature flags). Add the
+   "mdx" feature only if you want DAEMON Tools `.mdx` browsing.
+2. `cargo build` and fix every non-exhaustive-match error on `DiscFormat` (add arms or
+   `_ =>`, matching how this project handles unknown/unsupported formats).
+3. Ensure any file-open filter uses `formats::supported_extensions()`.
+4. Run the tests and confirm nothing else broke.
+
+Report which files changed and any matches you had to extend.
+```
+
+---
+
+# 0.8 — Game-disc support
+
+Console/game identification plus browsing for Nintendo GameCube & Wii, Sega Dreamcast
+(GD-ROM), Philips CD-i, and 3DO.
 
 ## Will it "just work"?
 
