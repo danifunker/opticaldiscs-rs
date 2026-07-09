@@ -7,6 +7,15 @@ All notable changes to this crate are documented here. This project follows
 
 ### Added — more disc-image containers
 
+- **Alcohol 120% (`.mds` / `.mdf`)** (`mds.rs`): the previously-stubbed
+  `DiscFormat::MdsMdf` now parses the binary `MEDIA DESCRIPTOR` header/session/
+  track blocks and browses the `.mdf`. Handles the common case of 2448-byte
+  sectors (2352 data + 96 appended subchannel) via a new
+  `BinCueSectorReader::with_layout` for explicit sector geometry; lead-in/out
+  metadata blocks are skipped. Either the `.mds` or the `.mdf` may be opened.
+  Format referenced from cdemu/libmirage. (Verified against real Alcohol images.)
+  Note: DAEMON Tools `.mdx` (MDSv2, which adds optional encryption/compression)
+  is **not** covered by this and remains unsupported.
 - **CloneCD (`.ccd` / `.img` / `.sub`)** (`ccd.rs`): a new `DiscFormat::CloneCd`
   parses the INI `.ccd` descriptor into tracks and browses the flat 2352-byte
   `.img` through the shared `BinCueSectorReader`. Mode 1 and Mode 2 data tracks

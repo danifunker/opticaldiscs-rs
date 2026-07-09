@@ -199,6 +199,32 @@ impl BinCueSectorReader {
             data_offset: track.data_offset(),
         })
     }
+
+    /// Open a raw data track with an **explicit** sector geometry.
+    ///
+    /// Some containers (MDS/MDF, NRG, DiscJuggler) specify a physical sector size
+    /// and in-sector data offset directly, including cases the fixed
+    /// [`crate::bincue::TrackType`] table cannot express — e.g. 2448-byte sectors
+    /// (2352 data + 96 bytes of appended subchannel). `data` need not be the same
+    /// file as any `.cue`/`.bin`; it is the container/data file to read from.
+    ///
+    /// - `file_byte_offset`: byte position in `data` of the track's first sector
+    /// - `physical_sector_size`: stride between sectors (e.g. 2352, 2448, 2048)
+    /// - `data_offset`: bytes from each sector's start to its 2048-byte user data
+    pub fn with_layout(
+        data: &Path,
+        file_byte_offset: u64,
+        physical_sector_size: u64,
+        data_offset: u64,
+    ) -> Result<Self> {
+        let file = File::open(data).map_err(OpticaldiscsError::Io)?;
+        Ok(Self {
+            file: BufReader::new(file),
+            file_byte_offset,
+            physical_sector_size,
+            data_offset,
+        })
+    }
 }
 
 impl SectorReader for BinCueSectorReader {

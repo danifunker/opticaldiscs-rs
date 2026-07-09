@@ -175,9 +175,7 @@ impl DiscImageInfo {
             DiscFormat::Cso => Self::probe_cso(path),
             DiscFormat::Gz => Self::probe_gz(path),
             DiscFormat::CloneCd => Self::probe_ccd(path),
-            DiscFormat::MdsMdf => Err(OpticaldiscsError::UnsupportedFormat(
-                "MDS/MDF is not supported".into(),
-            )),
+            DiscFormat::MdsMdf => Self::probe_mds(path),
         }
     }
 
@@ -322,6 +320,32 @@ impl DiscImageInfo {
             &mut reader,
             #[cfg(feature = "toc")]
             toc,
+        )
+    }
+
+    /// Probe an Alcohol 120% (`.mds`/`.mdf`) image via its first data track.
+    ///
+    /// Accepts either the `.mds` descriptor or the `.mdf` data file (resolving
+    /// the sibling `.mds` in the latter case).
+    fn probe_mds(path: &Path) -> Result<Self> {
+        let mds_path = crate::mds::resolve_mds_path(path)?;
+        let tracks = crate::mds::parse_mds(&mds_path)?;
+        let data = tracks
+            .iter()
+            .find(|t| t.is_data)
+            .ok_or(OpticaldiscsError::NoDataTrack)?;
+        let mut reader = BinCueSectorReader::with_layout(
+            &data.data_path,
+            data.file_byte_offset,
+            data.physical_sector_size,
+            data.data_offset,
+        )?;
+        Self::build(
+            path,
+            DiscFormat::MdsMdf,
+            &mut reader,
+            #[cfg(feature = "toc")]
+            None,
         )
     }
 

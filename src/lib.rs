@@ -71,6 +71,9 @@ pub mod gz;
 // CloneCD (.ccd/.img/.sub) container
 pub mod ccd;
 
+// Alcohol 120% (.mds/.mdf) container
+pub mod mds;
+
 // Phase 7 (HFS metadata — not browsing, see browse/)
 pub mod apm;
 pub mod hfs;

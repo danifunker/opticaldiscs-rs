@@ -224,7 +224,23 @@ fn open_sector_reader(info: &DiscImageInfo) -> Result<Box<dyn SectorReader>, Fil
             Ok(Box::new(reader))
         }
 
-        DiscFormat::Nintendo | DiscFormat::MdsMdf => Err(FilesystemError::Unsupported),
+        DiscFormat::MdsMdf => {
+            let mds_path = crate::mds::resolve_mds_path(path).map_err(disc_err)?;
+            let tracks = crate::mds::parse_mds(&mds_path).map_err(disc_err)?;
+            let data = tracks.iter().find(|t| t.is_data).ok_or_else(|| {
+                FilesystemError::InvalidData("no data track in .mds descriptor".into())
+            })?;
+            let reader = crate::sector_reader::BinCueSectorReader::with_layout(
+                &data.data_path,
+                data.file_byte_offset,
+                data.physical_sector_size,
+                data.data_offset,
+            )
+            .map_err(disc_err)?;
+            Ok(Box::new(reader))
+        }
+
+        DiscFormat::Nintendo => Err(FilesystemError::Unsupported),
     }
 }
 
