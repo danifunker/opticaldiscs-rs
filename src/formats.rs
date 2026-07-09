@@ -26,6 +26,8 @@ pub enum DiscFormat {
     /// gzip-compressed disc image (`.gz`) — typically a PS2 ISO stored as plain
     /// gzip (e.g. for PCSX2). Decompressed on the fly to a cooked view.
     Gz,
+    /// CloneCD image (`.ccd` descriptor + `.img` raw data + optional `.sub`).
+    CloneCd,
 }
 
 impl DiscFormat {
@@ -41,6 +43,7 @@ impl DiscFormat {
             "gcm" | "rvz" | "wbfs" | "ciso" | "gcz" | "wia" | "tgc" | "nfs" => Some(Self::Nintendo),
             "cso" => Some(Self::Cso),
             "gz" => Some(Self::Gz),
+            "ccd" => Some(Self::CloneCd),
             _ => None,
         }
     }
@@ -56,6 +59,7 @@ impl DiscFormat {
             Self::Nintendo => "Nintendo GameCube/Wii",
             Self::Cso => "CSO (PSP compressed ISO)",
             Self::Gz => "GZ (gzip-compressed image)",
+            Self::CloneCd => "CloneCD (CCD/IMG)",
         }
     }
 
@@ -70,6 +74,7 @@ impl DiscFormat {
             Self::Nintendo => &["gcm", "rvz", "wbfs", "ciso", "gcz", "wia", "tgc", "nfs"],
             Self::Cso => &["cso"],
             Self::Gz => &["gz"],
+            Self::CloneCd => &["ccd", "img", "sub"],
         }
     }
 }
@@ -78,7 +83,7 @@ impl DiscFormat {
 pub fn supported_extensions() -> &'static [&'static str] {
     &[
         "iso", "toast", "bin", "cue", "chd", "mds", "mdf", "gdi", "gcm", "rvz", "wbfs", "ciso",
-        "gcz", "wia", "tgc", "nfs", "cso", "gz",
+        "gcz", "wia", "tgc", "nfs", "cso", "gz", "ccd",
     ]
 }
 

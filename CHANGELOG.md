@@ -5,6 +5,15 @@ All notable changes to this crate are documented here. This project follows
 
 ## 0.9.0
 
+### Added — more disc-image containers
+
+- **CloneCD (`.ccd` / `.img` / `.sub`)** (`ccd.rs`): a new `DiscFormat::CloneCd`
+  parses the INI `.ccd` descriptor into tracks and browses the flat 2352-byte
+  `.img` through the shared `BinCueSectorReader`. Mode 1 and Mode 2 data tracks
+  and mixed audio+data discs are handled; the `.sub` subchannel file is ignored.
+  Format layout referenced from cdemu/libmirage. (Verified against real Die Hard
+  Trilogy 2 and Tyrian 2000 images.)
+
 ### Added — PlayStation 3 identification
 
 - **PS3 disc ISOs are identified** (`Console::Ps3`). PS3 discs already *browsed*

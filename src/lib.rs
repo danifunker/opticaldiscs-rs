@@ -68,6 +68,9 @@ pub mod gdi;
 pub mod cso;
 pub mod gz;
 
+// CloneCD (.ccd/.img/.sub) container
+pub mod ccd;
+
 // Phase 7 (HFS metadata — not browsing, see browse/)
 pub mod apm;
 pub mod hfs;

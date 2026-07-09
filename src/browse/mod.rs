@@ -210,6 +210,20 @@ fn open_sector_reader(info: &DiscImageInfo) -> Result<Box<dyn SectorReader>, Fil
             Ok(Box::new(reader))
         }
 
+        DiscFormat::CloneCd => {
+            let tracks = crate::ccd::parse_ccd(path).map_err(disc_err)?;
+            let data_track = tracks
+                .iter()
+                .find(|t| t.is_data())
+                .ok_or_else(|| {
+                    FilesystemError::InvalidData("no data track in .ccd descriptor".into())
+                })?
+                .clone();
+            let reader =
+                crate::sector_reader::BinCueSectorReader::open(&data_track).map_err(disc_err)?;
+            Ok(Box::new(reader))
+        }
+
         DiscFormat::Nintendo | DiscFormat::MdsMdf => Err(FilesystemError::Unsupported),
     }
 }

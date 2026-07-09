@@ -174,6 +174,7 @@ impl DiscImageInfo {
             DiscFormat::Gdi => Self::probe_gdi(path),
             DiscFormat::Cso => Self::probe_cso(path),
             DiscFormat::Gz => Self::probe_gz(path),
+            DiscFormat::CloneCd => Self::probe_ccd(path),
             DiscFormat::MdsMdf => Err(OpticaldiscsError::UnsupportedFormat(
                 "MDS/MDF is not supported".into(),
             )),
@@ -295,6 +296,29 @@ impl DiscImageInfo {
         Self::build(
             path,
             DiscFormat::BinCue,
+            &mut reader,
+            #[cfg(feature = "toc")]
+            toc,
+        )
+    }
+
+    /// Probe a CloneCD (`.ccd`/`.img`) image via its first data track.
+    fn probe_ccd(path: &Path) -> Result<Self> {
+        let tracks = crate::ccd::parse_ccd(path)?;
+        let data_track = tracks
+            .iter()
+            .find(|t| t.is_data())
+            .ok_or(OpticaldiscsError::NoDataTrack)?
+            .clone();
+
+        let mut reader = BinCueSectorReader::open(&data_track)?;
+
+        #[cfg(feature = "toc")]
+        let toc = build_bincue_toc(&tracks);
+
+        Self::build(
+            path,
+            DiscFormat::CloneCd,
             &mut reader,
             #[cfg(feature = "toc")]
             toc,
