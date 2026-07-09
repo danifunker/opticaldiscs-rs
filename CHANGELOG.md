@@ -7,6 +7,13 @@ All notable changes to this crate are documented here. This project follows
 
 ### Added — more disc-image containers
 
+- **Nero (`.nrg`)** (`nrg.rs`): a new `DiscFormat::Nrg` parses the footer-anchored
+  chunk collection (both `NER5`/v2 64-bit and `NERO`/v1 32-bit) and browses the
+  `.nrg` data via the DAO track offsets and per-track sector geometry. Format
+  referenced from cdemu/libmirage. (Container verified against real Nero images;
+  ISO 9660 browsing covered by an end-to-end synthetic test. Nero images of
+  non-ISO discs — e.g. AKAI sampler CDs — parse as the NRG container but report
+  an unknown filesystem, as expected.)
 - **Alcohol 120% (`.mds` / `.mdf`)** (`mds.rs`): the previously-stubbed
   `DiscFormat::MdsMdf` now parses the binary `MEDIA DESCRIPTOR` header/session/
   track blocks and browses the `.mdf`. Handles the common case of 2448-byte

@@ -74,6 +74,9 @@ pub mod ccd;
 // Alcohol 120% (.mds/.mdf) container
 pub mod mds;
 
+// Nero (.nrg) container
+pub mod nrg;
+
 // Phase 7 (HFS metadata — not browsing, see browse/)
 pub mod apm;
 pub mod hfs;

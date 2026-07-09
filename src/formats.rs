@@ -28,6 +28,8 @@ pub enum DiscFormat {
     Gz,
     /// CloneCD image (`.ccd` descriptor + `.img` raw data + optional `.sub`).
     CloneCd,
+    /// Nero image (`.nrg`) — data plus a footer-anchored chunk descriptor.
+    Nrg,
 }
 
 impl DiscFormat {
@@ -44,6 +46,7 @@ impl DiscFormat {
             "cso" => Some(Self::Cso),
             "gz" => Some(Self::Gz),
             "ccd" => Some(Self::CloneCd),
+            "nrg" => Some(Self::Nrg),
             _ => None,
         }
     }
@@ -60,6 +63,7 @@ impl DiscFormat {
             Self::Cso => "CSO (PSP compressed ISO)",
             Self::Gz => "GZ (gzip-compressed image)",
             Self::CloneCd => "CloneCD (CCD/IMG)",
+            Self::Nrg => "Nero (NRG)",
         }
     }
 
@@ -75,6 +79,7 @@ impl DiscFormat {
             Self::Cso => &["cso"],
             Self::Gz => &["gz"],
             Self::CloneCd => &["ccd", "img", "sub"],
+            Self::Nrg => &["nrg"],
         }
     }
 }
@@ -83,7 +88,7 @@ impl DiscFormat {
 pub fn supported_extensions() -> &'static [&'static str] {
     &[
         "iso", "toast", "bin", "cue", "chd", "mds", "mdf", "gdi", "gcm", "rvz", "wbfs", "ciso",
-        "gcz", "wia", "tgc", "nfs", "cso", "gz", "ccd",
+        "gcz", "wia", "tgc", "nfs", "cso", "gz", "ccd", "nrg",
     ]
 }
 

@@ -175,6 +175,7 @@ impl DiscImageInfo {
             DiscFormat::Cso => Self::probe_cso(path),
             DiscFormat::Gz => Self::probe_gz(path),
             DiscFormat::CloneCd => Self::probe_ccd(path),
+            DiscFormat::Nrg => Self::probe_nrg(path),
             DiscFormat::MdsMdf => Self::probe_mds(path),
         }
     }
@@ -320,6 +321,28 @@ impl DiscImageInfo {
             &mut reader,
             #[cfg(feature = "toc")]
             toc,
+        )
+    }
+
+    /// Probe a Nero (`.nrg`) image via its first data track.
+    fn probe_nrg(path: &Path) -> Result<Self> {
+        let tracks = crate::nrg::parse_nrg(path)?;
+        let data = tracks
+            .iter()
+            .find(|t| t.is_data)
+            .ok_or(OpticaldiscsError::NoDataTrack)?;
+        let mut reader = BinCueSectorReader::with_layout(
+            &data.data_path,
+            data.file_byte_offset,
+            data.physical_sector_size,
+            data.data_offset,
+        )?;
+        Self::build(
+            path,
+            DiscFormat::Nrg,
+            &mut reader,
+            #[cfg(feature = "toc")]
+            None,
         )
     }
 
