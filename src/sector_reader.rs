@@ -399,6 +399,46 @@ impl SectorReader for GdromSectorReader {
     }
 }
 
+// ── Absolute-LBA rebasing reader ─────────────────────────────────────────────
+
+/// A `SectorReader` that rebases absolute directory LBAs onto a track-relative
+/// inner reader.
+///
+/// Some images author their ISO 9660 volume with an absolute disc base: the
+/// Primary Volume Descriptor is still read volume-relative at LBA 16, but every
+/// directory extent stores an **absolute** disc LBA (`base_lba + relative`).
+/// DiscJuggler (`.cdi`) Dreamcast GD-ROM rips do this — the high-density
+/// session's `start_address` is the base (e.g. 45000, or 11702 for a rebuilt
+/// rip). This reader passes low LBAs (below `base_lba`: the PVD, path tables)
+/// straight through and subtracts `base_lba` from absolute directory LBAs before
+/// delegating, so the standard ISO 9660 browser reads the volume with no
+/// format-specific knowledge.
+///
+/// With `base_lba == 0` it is a transparent pass-through.
+pub struct RebaseSectorReader {
+    base_lba: u64,
+    inner: Box<dyn SectorReader>,
+}
+
+impl RebaseSectorReader {
+    /// Wrap `inner` (a track-relative reader whose sector 0 is the volume's LBA
+    /// 0), rebasing absolute LBAs `>= base_lba` by `base_lba`.
+    pub fn new(inner: Box<dyn SectorReader>, base_lba: u64) -> Self {
+        Self { base_lba, inner }
+    }
+}
+
+impl SectorReader for RebaseSectorReader {
+    fn read_sector(&mut self, lba: u64) -> Result<Vec<u8>> {
+        let target = if lba < self.base_lba {
+            lba
+        } else {
+            lba - self.base_lba
+        };
+        self.inner.read_sector(target)
+    }
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]

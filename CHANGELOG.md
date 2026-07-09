@@ -7,6 +7,19 @@ All notable changes to this crate are documented here. This project follows
 
 ### Added — more disc-image containers
 
+- **DiscJuggler (`.cdi`)** (`discjuggler.rs`): a new `DiscFormat::DiscJuggler`
+  parses the end-anchored, variable-length track descriptor (last 4 bytes are its
+  length) and browses the `.cdi` data through per-track sector geometry. Named
+  for the container, distinct from the Philips `FilesystemType::Cdi`. The
+  150-sector start pregap is physically present, so a track's user data begins
+  past it. Dreamcast GD-ROM rips — the common case — author their high-density
+  game session's ISO 9660 volume with **absolute** directory LBAs (the session's
+  `start_address`) while keeping the PVD volume-relative at LBA 16; browsing the
+  last (game) data track through a new `sector_reader::RebaseSectorReader`
+  resolves both. Format referenced from cdemu/libmirage. (Verified against real
+  Dreamcast rips — *Half-Life [DCRES]* and *Capcom vs. SNK 2* — browsing and
+  reading every file with zero failures; ISO 9660 browse + absolute-LBA rebase
+  also covered by end-to-end synthetic tests.)
 - **Nero (`.nrg`)** (`nrg.rs`): a new `DiscFormat::Nrg` parses the footer-anchored
   chunk collection (both `NER5`/v2 64-bit and `NERO`/v1 32-bit) and browses the
   `.nrg` data via the DAO track offsets and per-track sector geometry. Format

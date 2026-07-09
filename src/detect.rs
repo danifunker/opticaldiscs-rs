@@ -177,6 +177,7 @@ impl DiscImageInfo {
             DiscFormat::CloneCd => Self::probe_ccd(path),
             DiscFormat::Nrg => Self::probe_nrg(path),
             DiscFormat::MdsMdf => Self::probe_mds(path),
+            DiscFormat::DiscJuggler => Self::probe_discjuggler(path),
         }
     }
 
@@ -340,6 +341,37 @@ impl DiscImageInfo {
         Self::build(
             path,
             DiscFormat::Nrg,
+            &mut reader,
+            #[cfg(feature = "toc")]
+            None,
+        )
+    }
+
+    /// Probe a DiscJuggler (`.cdi`) image via its game data track.
+    ///
+    /// Picks the **last** data track — for Dreamcast GD-ROM rips (the common
+    /// case) that is the high-density game session; session 0 is a near-empty
+    /// low-density stub. Its ISO 9660 volume is browsed through a
+    /// [`crate::sector_reader::RebaseSectorReader`] keyed on the track's
+    /// absolute `start_address`, which is 0 (pass-through) for a normal disc.
+    fn probe_discjuggler(path: &Path) -> Result<Self> {
+        let tracks = crate::discjuggler::parse_discjuggler(path)?;
+        let data = tracks
+            .iter()
+            .rev()
+            .find(|t| t.is_data)
+            .ok_or(OpticaldiscsError::NoDataTrack)?;
+        let inner = BinCueSectorReader::with_layout(
+            &data.data_path,
+            data.file_byte_offset,
+            data.physical_sector_size,
+            data.data_offset,
+        )?;
+        let mut reader =
+            crate::sector_reader::RebaseSectorReader::new(Box::new(inner), data.base_lba);
+        Self::build(
+            path,
+            DiscFormat::DiscJuggler,
             &mut reader,
             #[cfg(feature = "toc")]
             None,

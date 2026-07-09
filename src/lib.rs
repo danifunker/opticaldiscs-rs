@@ -77,6 +77,9 @@ pub mod mds;
 // Nero (.nrg) container
 pub mod nrg;
 
+// DiscJuggler (.cdi) container
+pub mod discjuggler;
+
 // Phase 7 (HFS metadata — not browsing, see browse/)
 pub mod apm;
 pub mod hfs;

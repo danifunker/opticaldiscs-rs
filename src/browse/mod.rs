@@ -255,6 +255,26 @@ fn open_sector_reader(info: &DiscImageInfo) -> Result<Box<dyn SectorReader>, Fil
             Ok(Box::new(reader))
         }
 
+        DiscFormat::DiscJuggler => {
+            let tracks = crate::discjuggler::parse_discjuggler(path).map_err(disc_err)?;
+            // Browse the last data track (the Dreamcast HD game session; session
+            // 0 is a low-density stub), rebasing absolute directory LBAs.
+            let data = tracks.iter().rev().find(|t| t.is_data).ok_or_else(|| {
+                FilesystemError::InvalidData("no data track in .cdi image".into())
+            })?;
+            let inner = crate::sector_reader::BinCueSectorReader::with_layout(
+                &data.data_path,
+                data.file_byte_offset,
+                data.physical_sector_size,
+                data.data_offset,
+            )
+            .map_err(disc_err)?;
+            Ok(Box::new(crate::sector_reader::RebaseSectorReader::new(
+                Box::new(inner),
+                data.base_lba,
+            )))
+        }
+
         DiscFormat::Nintendo => Err(FilesystemError::Unsupported),
     }
 }

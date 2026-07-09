@@ -30,6 +30,11 @@ pub enum DiscFormat {
     CloneCd,
     /// Nero image (`.nrg`) — data plus a footer-anchored chunk descriptor.
     Nrg,
+    /// DiscJuggler image (`.cdi`) — data plus an end-anchored track descriptor.
+    ///
+    /// Named for the container (not the Philips CD-i filesystem in
+    /// [`FilesystemType::Cdi`], which is orthogonal).
+    DiscJuggler,
 }
 
 impl DiscFormat {
@@ -47,6 +52,7 @@ impl DiscFormat {
             "gz" => Some(Self::Gz),
             "ccd" => Some(Self::CloneCd),
             "nrg" => Some(Self::Nrg),
+            "cdi" => Some(Self::DiscJuggler),
             _ => None,
         }
     }
@@ -64,6 +70,7 @@ impl DiscFormat {
             Self::Gz => "GZ (gzip-compressed image)",
             Self::CloneCd => "CloneCD (CCD/IMG)",
             Self::Nrg => "Nero (NRG)",
+            Self::DiscJuggler => "DiscJuggler (CDI)",
         }
     }
 
@@ -80,6 +87,7 @@ impl DiscFormat {
             Self::Gz => &["gz"],
             Self::CloneCd => &["ccd", "img", "sub"],
             Self::Nrg => &["nrg"],
+            Self::DiscJuggler => &["cdi"],
         }
     }
 }
@@ -88,7 +96,7 @@ impl DiscFormat {
 pub fn supported_extensions() -> &'static [&'static str] {
     &[
         "iso", "toast", "bin", "cue", "chd", "mds", "mdf", "gdi", "gcm", "rvz", "wbfs", "ciso",
-        "gcz", "wia", "tgc", "nfs", "cso", "gz", "ccd", "nrg",
+        "gcz", "wia", "tgc", "nfs", "cso", "gz", "ccd", "nrg", "cdi",
     ]
 }
 
