@@ -96,10 +96,10 @@ for entry in fs.list_directory(&root)? {
 ## Cargo.toml
 
 ```toml
-opticaldiscs = "0.4"
+opticaldiscs = "0.9"
 
 # with optional features
-opticaldiscs = { version = "0.4", features = ["toc", "drives", "mdx"] }
+opticaldiscs = { version = "0.9", features = ["toc", "drives", "mdx"] }
 ```
 
 To track unreleased changes, depend on the git repository instead:
