@@ -113,6 +113,8 @@ pub enum FilesystemType {
     Cdi,
     /// 3DO Opera filesystem (big-endian, block-based directory tree).
     Opera,
+    /// Xbox / Xbox 360 XDVDFS (little-endian, binary-tree directories).
+    Xdvdfs,
     /// Could not be determined.
     Unknown,
 }
@@ -134,6 +136,7 @@ impl FilesystemType {
             Self::Wii => "Wii",
             Self::Cdi => "CD-i",
             Self::Opera => "3DO Opera",
+            Self::Xdvdfs => "Xbox XDVDFS",
             Self::Unknown => "Unknown",
         }
     }
@@ -154,6 +157,7 @@ impl FilesystemType {
                 | Self::Wii
                 | Self::Cdi
                 | Self::Opera
+                | Self::Xdvdfs
         )
     }
 }

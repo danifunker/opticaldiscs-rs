@@ -5,6 +5,27 @@ All notable changes to this crate are documented here. This project follows
 
 ## 0.9.0
 
+### Added — Xbox XDVDFS browsing + identification
+
+- **Xbox / Xbox 360 XDVDFS support** (`browse/xdvdfs.rs`): a new
+  `FilesystemType::Xdvdfs` and `XdvdfsFilesystem` browse Microsoft Xbox game
+  discs (little-endian, binary-tree directories). Detection probes the
+  `MICROSOFT*XBOX*MEDIA` magic at each candidate game-partition base
+  (`0`, XGD2, XGD3, XGD1-full), so `.iso` dumps of original Xbox discs — and
+  Xbox 360 XDVDFS ISOs — now browse. Xbox discs are identified (`Console::Xbox`)
+  by parsing `default.xbe`'s certificate for the title, title ID (serial), and
+  region.
+
+### Fixed — NKit-processed GC/Wii images no longer hang
+
+- **NKit images are refused cleanly instead of hanging.** An `.nkit.iso`
+  preserves the disc header (so it still *identifies* as the correct GC/Wii
+  game) but scrubs and rearranges the partition data, which `nod` cannot
+  reconstruct — previously browsing one would hang indefinitely. `NodeFilesystem`
+  now detects the `NKIT` marker at byte `0x200` and returns
+  `FilesystemError::Unsupported` immediately; convert such images to a full
+  ISO/RVZ to browse them.
+
 ### Added — PSP CSO, gzip-compressed images, and PSP identification
 
 - **PSP `.cso` (CISOv1) support** (`cso.rs`): a new [`DiscFormat::Cso`] and

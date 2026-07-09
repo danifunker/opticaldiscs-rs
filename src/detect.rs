@@ -715,6 +715,11 @@ pub(crate) fn probe_filesystem_opts(
         return Ok((FilesystemType::Opera, None));
     }
 
+    // ── Try Xbox / Xbox 360 XDVDFS (magic at a game-partition base + 0x10000) ─
+    if crate::browse::xdvdfs::detect(reader).is_some() {
+        return Ok((FilesystemType::Xdvdfs, None));
+    }
+
     // ── Try ISO 9660 / High Sierra ──────────────────────────────────────────
     if let Ok(pvd) = PrimaryVolumeDescriptor::read_from(reader) {
         let fs = if pvd.high_sierra {

@@ -39,6 +39,9 @@ pub mod cdi;
 // 3DO Opera
 pub mod opera;
 
+// Xbox / Xbox 360 XDVDFS
+pub mod xdvdfs;
+
 pub use cdi::CdiFilesystem;
 pub use efs::EfsFilesystem;
 pub use entry::{EntryType, FileEntry};
@@ -51,6 +54,7 @@ pub use ods2::Ods2Filesystem;
 pub use opera::OperaFilesystem;
 pub use udf::UdfFilesystem;
 pub use ufs::UfsFilesystem;
+pub use xdvdfs::XdvdfsFilesystem;
 
 use crate::detect::DiscImageInfo;
 use crate::error::OpticaldiscsError;
@@ -112,6 +116,8 @@ pub fn open_disc_filesystem(info: &DiscImageInfo) -> Result<Box<dyn Filesystem>,
         FilesystemType::Cdi => Ok(Box::new(CdiFilesystem::new(reader)?)),
 
         FilesystemType::Opera => Ok(Box::new(OperaFilesystem::new(reader)?)),
+
+        FilesystemType::Xdvdfs => Ok(Box::new(XdvdfsFilesystem::new(reader)?)),
 
         FilesystemType::Hfs | FilesystemType::HfsPlus => {
             // Use resolve_apple_hfs to get the correct offset — this handles

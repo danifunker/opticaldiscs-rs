@@ -380,7 +380,7 @@ Volume header @ block 0: record type `01` + **five `0x5A` sync bytes** @ 0x01; b
   the data. Flag bit 0x80000000 = last entry in dir.
 - Reference: barbeque/3dodump `OperaFS-Format.md`, 3dodev.com.
 
-### 8.5 Xbox / Xbox 360 XDVDFS — deferred, `src/browse/xdvdfs.rs` (little-endian)
+### 8.5 Xbox / Xbox 360 XDVDFS — **implemented** in 0.9.0, `src/browse/xdvdfs.rs` (little-endian)
 20-byte magic `MICROSOFT*XBOX*MEDIA` at **base + 0x10000** (and again at +0x7EC). Candidate
 game-partition bases to probe in order: `0`, `0x0FD90000` (XGD2), `0x02080000` (XGD3),
 `0x18300000` (XGD1 full dump). Volume descriptor: root dir sector (u32) @ 0x14, root size @
@@ -443,8 +443,11 @@ sector reader, so it works on BIN·CUE / CHD / ISO immediately. Highest value / 
 - [x] volume/dir/entry parse, avatar-pointer file reads; detection + `GameDiscInfo`
 
 ### Phase G6 — deferred `[ ]`
-Xbox XDVDFS; PS3 UDF 2.50 (ties into the existing planned UDF 2.50 metadata-partition work);
-PS4; Jaguar CD.
+Xbox XDVDFS `[x]` (0.9.0); PS3 UDF 2.50 (ties into the existing planned UDF 2.50
+metadata-partition work — needs per-disc decryption keys); PS4 (encrypted `.pkg`); Jaguar CD.
+Wii U (WUD/WUX, encrypted); Switch (NSP/XCI, encrypted); 3DS (CCI/CIA, encrypted) all require
+title keys and are out of scope for the disc-image browser. NKit-processed GC/Wii images are
+detected and refused (they need reconstruction `nod` does not perform).
 
 ---
 

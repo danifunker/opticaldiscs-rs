@@ -34,6 +34,14 @@ pub struct NodeFilesystem {
 impl NodeFilesystem {
     /// Open the data partition of the GameCube/Wii disc image at `path`.
     pub fn new(path: &Path) -> Result<Self, FilesystemError> {
+        // NKit-processed images preserve the disc header (so they *identify* as a
+        // normal GC/Wii disc) but scrub and rearrange the partition data. `nod`
+        // cannot reconstruct that and stalls trying to read it, so refuse to
+        // browse rather than hang — the image must be converted to a full
+        // ISO/RVZ first.
+        if is_nkit_image(path) {
+            return Err(FilesystemError::Unsupported);
+        }
         let disc = Disc::new(path).map_err(nod_err)?;
         let volume_name = ascii_z(&disc.header().game_title);
         let mut partition = disc
@@ -241,6 +249,23 @@ fn nintendo_region(c: u8) -> Option<Region> {
         b'W' => Some(Region::Asia),
         _ => None,
     }
+}
+
+/// True if `path` is an **NKit**-processed GC/Wii image.
+///
+/// NKit stores a `NKIT` marker at byte `0x200`, right after the preserved
+/// 0x200-byte disc header. Such images cannot be browsed without reconstruction,
+/// which `nod` does not perform.
+pub fn is_nkit_image(path: &Path) -> bool {
+    use std::io::{Read, Seek, SeekFrom};
+    let Ok(mut f) = std::fs::File::open(path) else {
+        return false;
+    };
+    if f.seek(SeekFrom::Start(0x200)).is_err() {
+        return false;
+    }
+    let mut magic = [0u8; 4];
+    f.read_exact(&mut magic).is_ok() && &magic == b"NKIT"
 }
 
 // ── Small helpers ─────────────────────────────────────────────────────────────

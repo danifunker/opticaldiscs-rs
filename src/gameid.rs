@@ -49,6 +49,8 @@ pub enum Console {
     CdI,
     /// Sony PlayStation Portable (UMD).
     Psp,
+    /// Microsoft Xbox (XDVDFS).
+    Xbox,
 }
 
 impl Console {
@@ -69,6 +71,7 @@ impl Console {
             Self::ThreeDo => "3DO",
             Self::CdI => "Philips CD-i",
             Self::Psp => "Sony PlayStation Portable",
+            Self::Xbox => "Microsoft Xbox",
         }
     }
 }
@@ -203,6 +206,11 @@ pub fn detect_game_disc_opts(
         });
     }
 
+    // 3b. Microsoft Xbox: XDVDFS volume + `default.xbe` certificate.
+    if let Some(base) = crate::browse::xdvdfs::detect(reader) {
+        return Some(probe_xbox(reader, base));
+    }
+
     // 4. ISO 9660 content probes (need a PVD). PlayStation 2 DVDs are a
     //    UDF + ISO 9660 bridge, so the caller may hand us `None` (UDF was
     //    detected first) even though an ISO PVD is present — parse it directly
@@ -333,6 +341,111 @@ fn probe_3do(s: &[u8]) -> GameDiscInfo {
         title: ascii_field(s, 0x28, 32),
         ..GameDiscInfo::just(Console::ThreeDo)
     }
+}
+
+/// Identify an Xbox disc from its XDVDFS volume at `base`.
+///
+/// Reads `default.xbe`'s header + certificate (title name, title ID, region).
+/// Always returns at least `Console::Xbox`; metadata is best-effort.
+fn probe_xbox(reader: &mut dyn SectorReader, base: u64) -> GameDiscInfo {
+    let cert = read_xbe_certificate(reader, base);
+    match cert {
+        Some(c) => GameDiscInfo {
+            console: Console::Xbox,
+            title: c.title,
+            serial: c.serial,
+            region: c.region,
+            maker: None,
+            version: None,
+        },
+        None => GameDiscInfo::just(Console::Xbox),
+    }
+}
+
+/// Parsed fields of interest from an Xbox `default.xbe` certificate.
+struct XbeCertificate {
+    title: Option<String>,
+    serial: Option<String>,
+    region: Option<Region>,
+}
+
+/// Read and parse the `default.xbe` certificate from the XDVDFS root at `base`.
+///
+/// The XBE header (magic `XBEH`) gives the certificate's virtual address, which
+/// is converted to a file offset via the image base. The certificate holds the
+/// title name (40 UTF-16LE chars @ 0x0C), the title ID (@ 0x08), and the region
+/// flags (@ 0xE0). Returns `None` if the file or header is missing/invalid.
+fn read_xbe_certificate(reader: &mut dyn SectorReader, base: u64) -> Option<XbeCertificate> {
+    let (sector, _size) = crate::browse::xdvdfs::root_file_extent(reader, base, "default.xbe")?;
+    let xbe_start = base + sector as u64 * SECTOR_SIZE;
+
+    let head = reader.read_bytes(xbe_start, 0x120).ok()?;
+    if head.len() < 0x11C || &head[0..4] != b"XBEH" {
+        return None;
+    }
+    let base_addr = u32::from_le_bytes(head[0x104..0x108].try_into().ok()?);
+    let cert_addr = u32::from_le_bytes(head[0x118..0x11C].try_into().ok()?);
+    let cert_off = cert_addr.checked_sub(base_addr)? as u64;
+
+    let cert = reader.read_bytes(xbe_start + cert_off, 0xE4).ok()?;
+    if cert.len() < 0xE4 {
+        return None;
+    }
+
+    let title_id = u32::from_le_bytes(cert[0x08..0x0C].try_into().ok()?);
+    let title = decode_utf16le(&cert[0x0C..0x0C + 80]);
+    // Certificate layout: title name (0x0C, 80 bytes) → alt title IDs (0x5C,
+    // 64 bytes) → allowed media (0x9C) → game region (0xA0).
+    let region_flags = u32::from_le_bytes(cert[0xA0..0xA4].try_into().ok()?);
+
+    Some(XbeCertificate {
+        title: non_empty(title.trim()),
+        serial: xbe_title_id_serial(title_id),
+        region: xbe_region(region_flags),
+    })
+}
+
+/// Format an Xbox title ID as a serial: two ASCII publisher letters, a dash, and
+/// the zero-padded title number (e.g. `0x4D53_0003` → `"MS-003"`). Falls back to
+/// hex when the publisher bytes are not printable ASCII.
+fn xbe_title_id_serial(title_id: u32) -> Option<String> {
+    if title_id == 0 {
+        return None;
+    }
+    let p1 = (title_id >> 24) as u8;
+    let p2 = (title_id >> 16) as u8;
+    let num = title_id & 0xFFFF;
+    if p1.is_ascii_uppercase() && p2.is_ascii_uppercase() {
+        Some(format!("{}{}-{:03}", p1 as char, p2 as char, num))
+    } else {
+        Some(format!("{title_id:08X}"))
+    }
+}
+
+/// Map Xbox certificate region flags to a coarse [`Region`].
+/// bit0 = North America, bit1 = Japan, bit2 = Rest of World (PAL); more than one
+/// set → `World`.
+fn xbe_region(flags: u32) -> Option<Region> {
+    let na = flags & 0x1 != 0;
+    let jp = flags & 0x2 != 0;
+    let row = flags & 0x4 != 0;
+    match (na, jp, row) {
+        (true, false, false) => Some(Region::NtscU),
+        (false, true, false) => Some(Region::NtscJ),
+        (false, false, true) => Some(Region::Pal),
+        (false, false, false) => None,
+        _ => Some(Region::World),
+    }
+}
+
+/// Decode a UTF-16LE fixed field to a `String`, stopping at the first NUL.
+fn decode_utf16le(bytes: &[u8]) -> String {
+    let units: Vec<u16> = bytes
+        .chunks_exact(2)
+        .map(|c| u16::from_le_bytes([c[0], c[1]]))
+        .take_while(|&u| u != 0)
+        .collect();
+    String::from_utf16_lossy(&units)
 }
 
 /// Map a Sega area-symbol byte string (characters like `J`, `U`, `E`) to a
@@ -907,6 +1020,34 @@ mod tests {
         assert_eq!(info.console, Console::Ps1);
         assert_eq!(info.serial.as_deref(), Some("SLUS-20152"));
         assert_eq!(info.region, Some(Region::NtscU));
+    }
+
+    #[test]
+    fn xbe_title_id_and_region_helpers() {
+        // "MS" publisher + title 3 → MS-003.
+        assert_eq!(xbe_title_id_serial(0x4D53_0003).as_deref(), Some("MS-003"));
+        assert_eq!(xbe_title_id_serial(0).as_deref(), None);
+        // Non-printable publisher → hex fallback.
+        assert_eq!(
+            xbe_title_id_serial(0x0000_0001).as_deref(),
+            Some("00000001")
+        );
+        assert_eq!(xbe_region(0x1), Some(Region::NtscU));
+        assert_eq!(xbe_region(0x2), Some(Region::NtscJ));
+        assert_eq!(xbe_region(0x4), Some(Region::Pal));
+        assert_eq!(xbe_region(0x7), Some(Region::World));
+        assert_eq!(xbe_region(0), None);
+    }
+
+    #[test]
+    fn decode_utf16le_stops_at_nul() {
+        // "Halo\0" in UTF-16LE plus trailing garbage.
+        let mut b = Vec::new();
+        for c in "Halo".encode_utf16() {
+            b.extend_from_slice(&c.to_le_bytes());
+        }
+        b.extend_from_slice(&[0, 0, b'X', 0]);
+        assert_eq!(decode_utf16le(&b), "Halo");
     }
 
     #[test]
