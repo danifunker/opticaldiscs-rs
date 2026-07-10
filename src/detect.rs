@@ -133,6 +133,12 @@ pub struct DiscImageInfo {
     /// Populated by [`crate::gameid::detect_game_disc`]; `None` for
     /// non-game discs (or game consoles this crate does not yet recognize).
     pub game: Option<crate::gameid::GameDiscInfo>,
+    /// El Torito boot catalog, if the disc is a bootable CD.
+    ///
+    /// Populated by [`crate::el_torito::detect`] during `open`; `None` when the
+    /// disc carries no (or a malformed) El Torito boot catalog. Detection is
+    /// lenient: a bad catalog leaves this `None` rather than failing the open.
+    pub el_torito: Option<crate::el_torito::ElTorito>,
     /// Disc Table of Contents, if the format provides track metadata.
     ///
     /// Present for BIN/CUE and CHD images; `None` for plain ISO files.
@@ -224,6 +230,7 @@ impl DiscImageInfo {
             sgi_header: None,
             efs_partition_offset: None,
             game: Some(game),
+            el_torito: None,
             #[cfg(feature = "toc")]
             toc: None,
         })
@@ -268,6 +275,9 @@ impl DiscImageInfo {
 
         let game = crate::gameid::detect_game_disc_opts(reader, pvd.as_ref(), !prefer_iso);
 
+        // El Torito boot catalog (bootable CDs). Lenient: never fails the open.
+        let el_torito = crate::el_torito::detect(reader);
+
         Ok(Self {
             path: path.to_path_buf(),
             format,
@@ -279,6 +289,7 @@ impl DiscImageInfo {
             sgi_header: sgi.header,
             efs_partition_offset: sgi.efs_partition_offset,
             game,
+            el_torito,
             #[cfg(feature = "toc")]
             toc,
         })
@@ -508,6 +519,7 @@ impl DiscImageInfo {
                     sgi_header: None,
                     efs_partition_offset: None,
                     game: None,
+                    el_torito: None,
                     #[cfg(feature = "toc")]
                     toc,
                 });

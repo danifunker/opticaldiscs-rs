@@ -3,6 +3,48 @@
 All notable changes to this crate are documented here. This project follows
 [Semantic Versioning](https://semver.org/).
 
+## 0.10.0
+
+### Added — El Torito boot-catalog support
+
+- **El Torito** (`el_torito.rs`): a new module parses the boot catalog of a
+  bootable CD and exposes it as `DiscImageInfo::el_torito: Option<ElTorito>`,
+  populated during `DiscImageInfo::open` across every container (`.iso`, BIN/CUE,
+  CHD, …) via the existing `SectorReader`. It walks the whole catalog — the
+  validation entry, the initial/default entry, and every section header
+  (`0x90`/`0x91`) with its section entries — surfacing all boot images (e.g. an
+  x86 floppy plus a UEFI image) as `BootEntry` values with platform, bootable
+  flag, media type, load RBA, sector count, system type, and a computed image
+  size (fixed floppy geometry, `sector_count * 512` for no-emulation, or the last
+  populated MBR partition end for hard-disk emulation). `BootEntry::image_extent`
+  gives the on-disc `(offset, length)` and `el_torito::read_boot_image` reads the
+  raw image bytes container-agnostically. Detection is lenient: a missing or
+  malformed catalog leaves `el_torito == None` and never fails an otherwise-good
+  open. The crate deliberately does **not** interpret a boot image as a
+  filesystem — that stays with consumers. (Byte-verified against a real Plop Boot
+  Manager El Torito CD.)
+
+### Added — El Torito boot-catalog editing (write path)
+
+- **El Torito editing** (`el_torito_edit.rs`): `ElToritoEditor` edits the boot
+  catalog of a **raw `.iso`** over a `Read + Write + Seek` handle (or
+  `open_path`). It can flip an entry bootable/off, change its platform / media
+  type / system type, `replace_image` with a new opaque blob, and `add_entry` /
+  `remove_entry`. Edits are staged and written by `commit`, which orders writes
+  for crash-safety (appended images and any relocated catalog first, then the
+  Boot Record VD pointer and PVD size). Same-size image replacement is in place;
+  a grown image is relocated to appended free space with `load_rba` /
+  `sector_count` / the catalog updated and the PVD `volume_space_size` bumped
+  (LE **and** BE). A metadata edit rewrites the catalog in its existing sector and
+  recomputes the validation-entry checksum. BIN/CUE and CHD are rejected (convert
+  to `.iso` first); leaked dead space from relocations/removals is documented and
+  out of scope to reclaim. A stretch `make_bootable` adds El Torito to a
+  non-bootable ISO when a free volume-descriptor slot exists, else returns a clear
+  "needs remaster" error. This crate still never interprets a boot image as a
+  filesystem — consumers edit the FAT/NTFS/… inside and hand over finished bytes.
+  (Byte-verified: a same-size round-trip of a real Plop Boot Manager CD is
+  byte-identical.)
+
 ## 0.9.0
 
 ### Added — more disc-image containers

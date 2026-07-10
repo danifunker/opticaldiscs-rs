@@ -58,6 +58,12 @@ pub mod toc;
 // Phase 6
 pub mod detect;
 
+// El Torito boot-catalog parsing (bootable CDs)
+pub mod el_torito;
+
+// El Torito boot-catalog editing (write path, raw .iso only)
+pub mod el_torito_edit;
+
 // Game-disc identification (see docs/GameDiscs_Implementation.md)
 pub mod gameid;
 
@@ -111,6 +117,12 @@ pub use formats::{supported_extensions, DiscFormat, FilesystemType};
 
 // ISO 9660 metadata types
 pub use iso9660::{Iso9660DateTime, JolietVolumeDescriptor, PrimaryVolumeDescriptor, PvdDateTime};
+
+// El Torito boot-catalog types
+pub use el_torito::{read_boot_image, BootEntry, BootMediaType, ElTorito, Platform};
+
+// El Torito editing (write path)
+pub use el_torito_edit::{make_bootable, ElToritoEditor, NewBootEntry};
 
 // Phase 2
 pub use sector_reader::SectorReader;
