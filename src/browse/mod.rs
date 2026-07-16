@@ -139,6 +139,43 @@ pub fn open_disc_filesystem(info: &DiscImageInfo) -> Result<Box<dyn Filesystem>,
     }
 }
 
+/// Open one of the disc's [`DiscImageInfo::hybrid_filesystems`] — the Apple_HFS
+/// side of a hybrid Mac/PC disc that [`open_disc_filesystem`] can't reach
+/// because an ISO 9660 primary won the probe.
+///
+/// `index` selects into `info.hybrid_filesystems` (usually `0`).
+///
+/// # Errors
+///
+/// [`FilesystemError::InvalidData`] if `index` is out of range;
+/// [`FilesystemError::Unsupported`] if the recorded offset no longer resolves to
+/// an HFS/HFS+ volume; otherwise any I/O / parse error from opening it.
+pub fn open_hybrid_filesystem(
+    info: &DiscImageInfo,
+    index: usize,
+) -> Result<Box<dyn Filesystem>, FilesystemError> {
+    let hybrid = info.hybrid_filesystems.get(index).ok_or_else(|| {
+        FilesystemError::InvalidData(format!(
+            "hybrid filesystem index {index} out of range ({} present)",
+            info.hybrid_filesystems.len()
+        ))
+    })?;
+
+    let mut reader = open_sector_reader(info)?;
+    // Re-resolve from the stored raw APM offset, mirroring open_disc_filesystem:
+    // an HFS wrapper around embedded HFS+ needs the resolved inner offset.
+    let (resolved_fs, resolved_offset) =
+        crate::detect::resolve_apple_hfs(reader.as_mut(), hybrid.partition_offset);
+    match resolved_fs {
+        FilesystemType::Hfs => Ok(Box::new(HfsFilesystem::new(
+            reader,
+            hybrid.partition_offset,
+        )?)),
+        FilesystemType::HfsPlus => Ok(Box::new(HfsPlusFilesystem::new(reader, resolved_offset)?)),
+        _ => Err(FilesystemError::Unsupported),
+    }
+}
+
 // ── Internal helpers ──────────────────────────────────────────────────────────
 
 /// Build a boxed [`SectorReader`] appropriate for `info`'s container format.

@@ -3,6 +3,31 @@
 All notable changes to this crate are documented here. This project follows
 [Semantic Versioning](https://semver.org/).
 
+## 0.11.0
+
+### Added — hybrid Mac/PC disc detection
+
+- **Hybrid filesystems** (`detect.rs`): a disc can carry two filesystems over one
+  data track — an ISO 9660 volume (the PC side) plus an `Apple_HFS` /
+  `Apple_HFS+` partition (the Mac side), separated by an Apple Partition Map
+  rather than by disc sessions. Only one filesystem can be the primary
+  `DiscImageInfo::filesystem`, so previously the HFS side of these common 90s
+  Mac/PC game discs was invisible — ISO 9660 won the probe and the Apple
+  partition was never surfaced.
+- `DiscImageInfo` gains a `hybrid_filesystems: Vec<HybridFilesystem>` field,
+  populated during `open` by probing the APM regardless of the primary
+  filesystem. Each `HybridFilesystem` carries its `FilesystemType`, volume label
+  (read from the MDB / volume header), and `partition_offset`. A pure-HFS disc —
+  where the APM's HFS partition *is* the primary — yields an empty list, so the
+  same partition is never reported twice.
+- `browse::open_hybrid_filesystem(&info, index)` opens one of those co-resident
+  partitions, mirroring `open_disc_filesystem`'s HFS handling (raw offset for
+  HFS, resolved offset for embedded HFS+). Everything reads through the same
+  cooked `SectorReader`, so the APM's `start_block * 512` offsets resolve
+  correctly regardless of the container's physical sector size. (Verified against
+  real Toast-mastered hybrid CDs — *The Incredible Machine 3* and *Age of
+  Empires II Gold*.)
+
 ## 0.10.0
 
 ### Added — El Torito boot-catalog support

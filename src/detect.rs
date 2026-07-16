@@ -104,6 +104,27 @@ pub fn detect_filesystem(reader: &mut dyn SectorReader) -> Result<FilesystemType
 
 // ── DiscImageInfo ─────────────────────────────────────────────────────────────
 
+/// A filesystem that shares a data track with the disc's primary filesystem.
+///
+/// Hybrid Mac/PC discs carry two directory trees over one data region: an
+/// ISO 9660 volume (the PC side) plus an `Apple_HFS` / `Apple_HFS+` partition
+/// (the Mac side), separated by an Apple Partition Map rather than by disc
+/// sessions. Only one filesystem can be the [`DiscImageInfo::filesystem`]
+/// primary, so the co-resident one is recorded here and can be opened with
+/// [`crate::browse::open_hybrid_filesystem`].
+#[derive(Debug, Clone)]
+pub struct HybridFilesystem {
+    /// [`FilesystemType::Hfs`] or [`FilesystemType::HfsPlus`].
+    pub filesystem: FilesystemType,
+    /// Volume name read from the MDB / volume header, if legible.
+    pub volume_label: Option<String>,
+    /// Byte offset of the partition within the (cooked) data track — the raw
+    /// APM `start_block * 512`. Feed it to [`resolve_apple_hfs`] /
+    /// `HfsFilesystem::new` exactly as [`crate::browse::open_disc_filesystem`]
+    /// does for a primary HFS.
+    pub partition_offset: u64,
+}
+
 /// All available information about a disc image, obtained without full parsing.
 ///
 /// Use [`DiscImageInfo::open`] to create one from a file path.
@@ -113,8 +134,13 @@ pub struct DiscImageInfo {
     pub path: PathBuf,
     /// Detected container format.
     pub format: DiscFormat,
-    /// Detected on-disc filesystem.
+    /// Detected on-disc filesystem (the primary one, chosen by probe order).
     pub filesystem: FilesystemType,
+    /// Additional filesystems co-resident on the same data track. Empty for the
+    /// common single-filesystem disc; on a hybrid Mac/PC disc this holds the
+    /// `Apple_HFS` side that the primary [`filesystem`](Self::filesystem) (an
+    /// ISO 9660 volume) hides. See [`HybridFilesystem`].
+    pub hybrid_filesystems: Vec<HybridFilesystem>,
     /// Volume label extracted from the filesystem, if available.
     pub volume_label: Option<String>,
     /// Parsed ISO 9660 Primary Volume Descriptor, if present.
@@ -223,6 +249,7 @@ impl DiscImageInfo {
             path: path.to_path_buf(),
             format: DiscFormat::Nintendo,
             filesystem,
+            hybrid_filesystems: Vec::new(),
             volume_label: game.title.clone(),
             pvd: None,
             hfs_mdb: None,
@@ -255,6 +282,10 @@ impl DiscImageInfo {
         let prefer_iso = matches!(format, DiscFormat::Gz);
         let (mut filesystem, pvd) = probe_filesystem_opts(reader, prefer_iso)?;
         let (hfs_mdb, hfsplus_header, hfs_volume_label) = probe_hfs_detail(reader, filesystem);
+        // Hybrid Mac/PC discs: an ISO 9660 primary can hide an Apple_HFS
+        // partition on the same track. Probe the APM regardless of the primary
+        // so both trees are discoverable.
+        let hybrid_filesystems = detect_hybrid_filesystems(reader, filesystem);
         let sgi = probe_sgi_detail(reader);
         if filesystem == FilesystemType::Unknown {
             if let Some(fs) = sgi.filesystem {
@@ -282,6 +313,7 @@ impl DiscImageInfo {
             path: path.to_path_buf(),
             format,
             filesystem,
+            hybrid_filesystems,
             volume_label,
             pvd,
             hfs_mdb,
@@ -512,6 +544,7 @@ impl DiscImageInfo {
                     path: path.to_path_buf(),
                     format: DiscFormat::Chd,
                     filesystem: FilesystemType::Unknown,
+                    hybrid_filesystems: Vec::new(),
                     volume_label: None,
                     pvd: None,
                     hfs_mdb: None,
@@ -729,6 +762,61 @@ fn probe_hfs_detail(
         },
         _ => (None, None, None),
     }
+}
+
+/// Discover HFS / HFS+ partitions co-resident with the primary filesystem on a
+/// hybrid Mac/PC disc, via the Apple Partition Map.
+///
+/// Returns the partitions the primary [`FilesystemType`] does *not* already
+/// represent, each with its volume label read from the MDB / volume header.
+/// The common case: an ISO 9660 primary plus one `Apple_HFS` partition (the Mac
+/// side). A pure-HFS disc — where the APM's HFS partition *is* the primary —
+/// yields an empty list, so the same partition is never reported twice.
+///
+/// Everything here reads through the same cooked [`SectorReader`] the primary
+/// probe used, so APM `start_block * 512` offsets resolve correctly regardless
+/// of the container's physical sector size.
+fn detect_hybrid_filesystems(
+    reader: &mut dyn SectorReader,
+    primary: FilesystemType,
+) -> Vec<HybridFilesystem> {
+    let entries = match crate::apm::parse_partition_map(reader) {
+        Ok(e) => e,
+        Err(_) => return Vec::new(), // no APM → not a hybrid Mac disc
+    };
+
+    let primary_is_hfs = matches!(primary, FilesystemType::Hfs | FilesystemType::HfsPlus);
+    let mut primary_absorbed = false;
+    let mut out = Vec::new();
+
+    for entry in entries.iter().filter(|e| e.is_hfs()) {
+        let raw_offset = entry.start_block as u64 * 512;
+        let (fs, resolved_offset) = resolve_apple_hfs(reader, raw_offset);
+        if !matches!(fs, FilesystemType::Hfs | FilesystemType::HfsPlus) {
+            continue; // APM claimed HFS but no MDB/header there — skip
+        }
+        // Don't re-list the partition that already surfaced as the primary FS.
+        if primary_is_hfs && !primary_absorbed {
+            primary_absorbed = true;
+            continue;
+        }
+        let volume_label = match fs {
+            FilesystemType::Hfs => MasterDirectoryBlock::read_from(reader, raw_offset)
+                .ok()
+                .map(|mdb| mdb.volume_name),
+            FilesystemType::HfsPlus => extract_volume_name_from_catalog(reader, resolved_offset)
+                .ok()
+                .flatten(),
+            _ => None,
+        };
+        out.push(HybridFilesystem {
+            filesystem: fs,
+            volume_label,
+            partition_offset: raw_offset,
+        });
+    }
+
+    out
 }
 
 /// Probe for an SGI Volume Header and, if present, find the byte offset of
@@ -980,6 +1068,82 @@ mod tests {
         let (fs, pvd) = probe_filesystem(&mut reader).unwrap();
         assert_eq!(fs, FilesystemType::Unknown);
         assert!(pvd.is_none());
+    }
+
+    /// Write a 512-byte APM PM entry at a 512-byte sub-block of `img`.
+    fn write_pm(img: &mut [u8], sub_block: usize, start_block: u32, ptype: &str, map_entries: u32) {
+        let o = sub_block * 512;
+        img[o] = 0x50; // 'P'
+        img[o + 1] = 0x4D; // 'M'
+        img[o + 4..o + 8].copy_from_slice(&map_entries.to_be_bytes());
+        img[o + 8..o + 12].copy_from_slice(&start_block.to_be_bytes());
+        img[o + 12..o + 16].copy_from_slice(&100u32.to_be_bytes());
+        img[o + 48..o + 48 + ptype.len()].copy_from_slice(ptype.as_bytes());
+    }
+
+    /// Write a minimal HFS MDB (signature + volume name) at `partition_offset`.
+    fn write_mdb(img: &mut [u8], partition_offset: usize, name: &str) {
+        let o = partition_offset + 1024;
+        img[o] = 0x42; // 'B'
+        img[o + 1] = 0x44; // 'D'
+        img[o + 36] = name.len() as u8;
+        img[o + 37..o + 37 + name.len()].copy_from_slice(name.as_bytes());
+    }
+
+    /// Build a hybrid image: optional ISO 9660 PVD at sector 16, an APM in
+    /// sector 0 (DDM + partition-map entry + one Apple_HFS entry), and an HFS
+    /// MDB at the partition offset. `hfs_start_block` is in 512-byte APM units.
+    fn hybrid_image(iso_label: Option<&str>, hfs_name: &str, hfs_start_block: u32) -> Vec<u8> {
+        let mut img = vec![0u8; 64 * SECTOR_SIZE as usize];
+        img[0] = 0x45; // DDM 'E'
+        img[1] = 0x52; // 'R'
+        write_pm(&mut img, 1, 1, "Apple_partition_map", 2);
+        write_pm(&mut img, 2, hfs_start_block, "Apple_HFS", 2);
+        write_mdb(&mut img, hfs_start_block as usize * 512, hfs_name);
+        if let Some(label) = iso_label {
+            let pvd = build_test_pvd_sector(label, 18, 2048);
+            let off = PVD_SECTOR as usize * SECTOR_SIZE as usize;
+            img[off..off + 2048].copy_from_slice(&pvd);
+        }
+        img
+    }
+
+    #[test]
+    fn hybrid_hfs_detected_alongside_iso_primary() {
+        // The Incredible Machine-style disc: ISO wins the primary probe, the
+        // Apple_HFS partition surfaces in hybrid_filesystems. HFS at sub-block 8
+        // (byte 4096) keeps the MDB clear of the APM in sector 0.
+        let img = hybrid_image(Some("PC_SIDE"), "Mac Side", 8);
+        let mut reader = CursorReader(Cursor::new(img));
+        let (primary, _) = probe_filesystem(&mut reader).unwrap();
+        assert_eq!(primary, FilesystemType::Iso9660);
+
+        let hybrids = detect_hybrid_filesystems(&mut reader, primary);
+        assert_eq!(hybrids.len(), 1, "the HFS side must be discoverable");
+        assert_eq!(hybrids[0].filesystem, FilesystemType::Hfs);
+        assert_eq!(hybrids[0].volume_label.as_deref(), Some("Mac Side"));
+        assert_eq!(hybrids[0].partition_offset, 8 * 512);
+    }
+
+    #[test]
+    fn no_hybrid_without_apm() {
+        // A plain ISO with no partition map has no co-resident filesystem.
+        let img = iso_image_with_label("PLAIN");
+        let mut reader = CursorReader(Cursor::new(img));
+        let hybrids = detect_hybrid_filesystems(&mut reader, FilesystemType::Iso9660);
+        assert!(hybrids.is_empty());
+    }
+
+    #[test]
+    fn pure_hfs_partition_not_double_listed() {
+        // No ISO: the APM's HFS partition *is* the primary. It must not also
+        // appear in hybrid_filesystems.
+        let img = hybrid_image(None, "Only Mac", 8);
+        let mut reader = CursorReader(Cursor::new(img));
+        let (primary, _) = probe_filesystem(&mut reader).unwrap();
+        assert_eq!(primary, FilesystemType::Hfs);
+        let hybrids = detect_hybrid_filesystems(&mut reader, primary);
+        assert!(hybrids.is_empty(), "primary HFS re-listed as a hybrid");
     }
 
     // ── detect_format tests ────────────────────────────────────────────────
