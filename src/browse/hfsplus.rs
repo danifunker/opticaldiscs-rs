@@ -409,6 +409,10 @@ impl Filesystem for HfsPlusFilesystem {
         Ok(Some(bytes))
     }
 
+    fn allocation_unit(&self) -> Option<u64> {
+        (self.block_size != 0).then_some(self.block_size as u64)
+    }
+
     fn volume_name(&self) -> Option<&str> {
         if self.volume_name.is_empty() {
             None

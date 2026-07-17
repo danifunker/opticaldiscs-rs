@@ -459,6 +459,12 @@ impl Filesystem for UdfFilesystem {
         Ok(None)
     }
 
+    fn allocation_unit(&self) -> Option<u64> {
+        // UDF allocates in whole logical blocks; `block_size` is guaranteed
+        // non-zero at construction.
+        Some(self.block_size)
+    }
+
     fn volume_name(&self) -> Option<&str> {
         self.volume_id.as_deref()
     }

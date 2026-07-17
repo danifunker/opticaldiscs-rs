@@ -3,6 +3,27 @@
 All notable changes to this crate are documented here. This project follows
 [Semantic Versioning](https://semver.org/).
 
+## 0.11.1
+
+### Added — per-volume allocation-unit accessor on the browse `Filesystem` trait
+
+- **`Filesystem::allocation_unit(&self) -> Option<u64>`** (`browse/filesystem.rs`):
+  a new trait method reporting the volume's fixed allocation/logical block size in
+  bytes, when it has one — the unit a fork's length is rounded up to for its real
+  on-disk footprint. It has a `None` default, so the addition is additive and
+  backward-compatible (no existing impl breaks). This lets a downstream consumer
+  (e.g. `rb-cli du`) model both-fork allocated bytes for optical HFS/HFS+ discs,
+  mirroring the same accessor already on rusty-backup's block-image `Filesystem`.
+- Implemented on every backend with a single fixed unit: **HFS** (`drAlBlkSiz`),
+  **HFS+** (`blockSize`), **ISO 9660** and **CD-i** (2048-byte logical sector),
+  **UDF** and **3DO Opera** (their logical `block_size`), **SGI EFS** (512-byte
+  basic block), and **Xbox XDVDFS** (2048-byte sector). HFS/HFS+ guard a zero
+  block size to `None`.
+- Left at the `None` default where the format has no single fixed unit: **UFS**
+  (block + fragment allocation), **ODS-2** (allocates in volume clusters; the
+  cluster factor is not parsed), and **GameCube/Wii** (storage abstracted by the
+  `nod` crate).
+
 ## 0.11.0
 
 ### Added — hybrid Mac/PC disc detection

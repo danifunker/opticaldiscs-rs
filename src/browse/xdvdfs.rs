@@ -222,6 +222,11 @@ impl Filesystem for XdvdfsFilesystem {
         Ok(None)
     }
 
+    fn allocation_unit(&self) -> Option<u64> {
+        // XDVDFS stores files contiguously, aligned to whole 2048-byte sectors.
+        Some(SECTOR_SIZE)
+    }
+
     fn volume_name(&self) -> Option<&str> {
         None
     }

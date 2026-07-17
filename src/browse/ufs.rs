@@ -530,6 +530,10 @@ impl Filesystem for UfsFilesystem {
         Ok(None)
     }
 
+    // No `allocation_unit` override: UFS allocates in two granularities — full
+    // `bsize` blocks plus `fsize` fragments for the trailing partial block — so
+    // it has no single fixed unit. Inherits the `None` default.
+
     fn volume_name(&self) -> Option<&str> {
         self.volume_id.as_deref()
     }

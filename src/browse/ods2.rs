@@ -318,6 +318,11 @@ impl Filesystem for Ods2Filesystem {
         Ok(None)
     }
 
+    // No `allocation_unit` override: ODS-2 allocates in volume clusters (the home
+    // block's cluster factor, which this reader does not parse), so the 512-byte
+    // logical block is not the on-disk allocation unit. Inherits the `None`
+    // default.
+
     fn volume_name(&self) -> Option<&str> {
         self.volume_id.as_deref()
     }

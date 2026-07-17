@@ -66,4 +66,11 @@ pub trait Filesystem: Send {
 
     /// The volume label, if the filesystem provides one.
     fn volume_name(&self) -> Option<&str>;
+
+    /// The volume's fixed allocation/logical block size in bytes, when it has
+    /// one. A fork's real on-disk footprint is its length rounded up to this
+    /// unit. `None` when the filesystem has no single fixed unit. Default `None`.
+    fn allocation_unit(&self) -> Option<u64> {
+        None
+    }
 }

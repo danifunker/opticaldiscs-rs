@@ -189,6 +189,11 @@ impl Filesystem for NodeFilesystem {
         Ok(None)
     }
 
+    // No `allocation_unit` override: the `nod` crate abstracts GameCube/Wii
+    // storage (logically contiguous FST entries; Wii payload in 0x8000-byte
+    // crypto blocks), with no single fixed unit a fork rounds up to. Inherits the
+    // `None` default.
+
     fn volume_name(&self) -> Option<&str> {
         if self.volume_name.is_empty() {
             None

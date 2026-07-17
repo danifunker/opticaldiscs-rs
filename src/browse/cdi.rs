@@ -206,6 +206,12 @@ impl Filesystem for CdiFilesystem {
         Ok(None)
     }
 
+    fn allocation_unit(&self) -> Option<u64> {
+        // CD-i is ISO 9660-derived: file extents are aligned to whole 2048-byte
+        // logical sectors.
+        Some(SECTOR_SIZE)
+    }
+
     fn volume_name(&self) -> Option<&str> {
         if self.volume_id.is_empty() {
             None

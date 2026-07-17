@@ -210,6 +210,12 @@ impl Filesystem for OperaFilesystem {
         Ok(None)
     }
 
+    fn allocation_unit(&self) -> Option<u64> {
+        // 3DO Opera allocates in whole blocks; `block_size` is guaranteed
+        // non-zero at construction.
+        Some(self.block_size as u64)
+    }
+
     fn volume_name(&self) -> Option<&str> {
         if self.label.is_empty() {
             None

@@ -376,6 +376,10 @@ impl Filesystem for HfsFilesystem {
         Ok(Some(bytes))
     }
 
+    fn allocation_unit(&self) -> Option<u64> {
+        (self.alloc_block_size != 0).then_some(self.alloc_block_size as u64)
+    }
+
     fn volume_name(&self) -> Option<&str> {
         if self.volume_name.is_empty() {
             None
@@ -720,6 +724,44 @@ fn hfs_disc_err(e: crate::error::OpticaldiscsError) -> FilesystemError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A `SectorReader` that yields zeroed sectors — enough to satisfy the
+    /// `HfsFilesystem` field without touching the disc, for accessor tests that
+    /// never read data.
+    struct NullReader;
+    impl SectorReader for NullReader {
+        fn read_sector(&mut self, _lba: u64) -> crate::error::Result<Vec<u8>> {
+            Ok(vec![0u8; 2048])
+        }
+    }
+
+    /// Build an `HfsFilesystem` with a known allocation-block size and no catalog,
+    /// for testing field accessors in isolation.
+    fn hfs_with_alloc_block(alloc_block_size: u32) -> HfsFilesystem {
+        HfsFilesystem {
+            reader: Box::new(NullReader),
+            partition_offset: 0,
+            alloc_block_size,
+            alloc_block_start: 0,
+            catalog_data: Vec::new(),
+            node_size: 0,
+            first_leaf_node: 0,
+            volume_name: String::new(),
+        }
+    }
+
+    #[test]
+    fn allocation_unit_reports_alloc_block_size() {
+        // A typical optical HFS allocation block (drAlBlkSiz).
+        let fs = hfs_with_alloc_block(2048);
+        assert_eq!(fs.allocation_unit(), Some(2048));
+    }
+
+    #[test]
+    fn allocation_unit_is_none_for_zero_block_size() {
+        let fs = hfs_with_alloc_block(0);
+        assert_eq!(fs.allocation_unit(), None);
+    }
 
     #[test]
     fn hfs_extent_fields() {

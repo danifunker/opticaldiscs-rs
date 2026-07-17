@@ -281,6 +281,12 @@ impl Filesystem for Iso9660Filesystem {
         Ok(None)
     }
 
+    fn allocation_unit(&self) -> Option<u64> {
+        // ISO 9660 allocates file data in whole 2048-byte logical blocks; the
+        // browser addresses the volume entirely at this cooked-sector size.
+        Some(SECTOR_SIZE)
+    }
+
     fn volume_name(&self) -> Option<&str> {
         if self.volume_id.is_empty() {
             None
@@ -616,6 +622,14 @@ mod tests {
         let reader = Box::new(CursorReader(Cursor::new(img)));
         let fs = Iso9660Filesystem::new(reader).unwrap();
         assert_eq!(fs.volume_name(), Some("MY_DISC"));
+    }
+
+    #[test]
+    fn allocation_unit_is_logical_block() {
+        let img = build_iso_image("ALLOC_TEST", &[]);
+        let reader = Box::new(CursorReader(Cursor::new(img)));
+        let fs = Iso9660Filesystem::new(reader).unwrap();
+        assert_eq!(fs.allocation_unit(), Some(2048));
     }
 
     #[test]

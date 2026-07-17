@@ -388,6 +388,11 @@ impl Filesystem for EfsFilesystem {
         Ok(None)
     }
 
+    fn allocation_unit(&self) -> Option<u64> {
+        // SGI EFS allocates file data as extents of 512-byte basic blocks.
+        Some(EFS_BLOCKSIZE)
+    }
+
     fn volume_name(&self) -> Option<&str> {
         if self.label.is_empty() {
             None
