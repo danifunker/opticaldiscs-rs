@@ -67,6 +67,9 @@ pub mod el_torito_edit;
 // Game-disc identification (see docs/GameDiscs_Implementation.md)
 pub mod gameid;
 
+// Standalone NKit ISO (.nkit.iso) reconstruction for GameCube discs, fed to `nod`.
+pub mod nkit_iso;
+
 // Dreamcast GD-ROM .gdi container
 pub mod gdi;
 
@@ -138,6 +141,9 @@ pub use sector_reader::{GdromSectorReader, GDROM_HD_START_LBA};
 
 // Game-disc identification
 pub use gameid::{detect_game_disc, Console, GameDiscInfo, Region};
+
+// Standalone NKit ISO reconstruction
+pub use nkit_iso::NkitIsoReader;
 
 // Phase 8
 pub use hfs::MasterDirectoryBlock;

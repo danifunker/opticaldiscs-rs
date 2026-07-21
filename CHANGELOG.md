@@ -3,6 +3,43 @@
 All notable changes to this crate are documented here. This project follows
 [Semantic Versioning](https://semver.org/).
 
+## 0.12.0
+
+### Added — native browsing of standalone NKit ISO images (GameCube)
+
+- **`nkit_iso` module** with **`NkitIsoReader`** (`src/nkit_iso.rs`): standalone
+  NKit ISO (`*.nkit.iso`) images are now browsed and extracted natively, instead
+  of being refused. NKit shrinks a GameCube disc by stripping the console's
+  deterministic "junk" padding and compacting the gaps between files, so the
+  stripped image cannot be read as a plain ISO — the FST offsets point at the
+  original disc layout while the file data sits at compacted offsets. Previously
+  `browse` returned `Unsupported` for these and callers had to convert to
+  ISO/RVZ first.
+- `NkitIsoReader` reconstructs the original disc image on the fly (a faithful
+  port of NKit's own recover-to-ISO path) and presents it as a cloneable
+  `Read + Seek` stream, which `nod` then browses as an ordinary disc via
+  `Disc::new_stream`. The junk padding is regenerated with the exact
+  lagged-Fibonacci PRNG `nod` already ships (`nod::LaggedFibonacci`), so the
+  rebuild is byte-for-byte identical to the source disc — verified against the
+  CRC32 stored in the NKit header.
+- Reconstruction parses the header at `0x200`, reads the system area + FST
+  verbatim, walks the compacted file/gap stream (gap kinds: all-junk,
+  all-scrubbed, and mixed junk / preserved-bytes / byte-fill runs), regenerates
+  junk regions, and rewrites the FST/DOL offsets to the recovered layout — all as
+  a lazy region map, so browsing touches only the sectors it needs rather than
+  materialising the full 1.46 GB disc.
+- Scope is the **v1** standalone ISO (`NKIT v01`), the format the NKit tool
+  writes for `.nkit.iso` — every standalone image observed in the wild is v01.
+  "NKit v2" is *not* a standalone-ISO format: it is NKit-lossless data embedded
+  in a CISO/WBFS/RVZ block map, which `nod` already reads natively, so those
+  images go straight to `nod` and never reach this reader. A standalone
+  `NKIT v02` marker (or a Wii NKit ISO, or any malformed image) is rejected with
+  a clear `FilesystemError` rather than guessed at or hung on.
+- `browse::open_disc_filesystem` / `NodeFilesystem::new` route NKit images
+  through the reconstructor transparently; detection (`DiscImageInfo::open`
+  reporting `nintendo` / `gamecube`) is unchanged. Malformed or unknown-variant
+  images return a clear `FilesystemError` rather than blocking.
+
 ## 0.11.1
 
 ### Added — per-volume allocation-unit accessor on the browse `Filesystem` trait

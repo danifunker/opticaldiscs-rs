@@ -34,15 +34,21 @@ pub struct NodeFilesystem {
 impl NodeFilesystem {
     /// Open the data partition of the GameCube/Wii disc image at `path`.
     pub fn new(path: &Path) -> Result<Self, FilesystemError> {
-        // NKit-processed images preserve the disc header (so they *identify* as a
-        // normal GC/Wii disc) but scrub and rearrange the partition data. `nod`
-        // cannot reconstruct that and stalls trying to read it, so refuse to
-        // browse rather than hang — the image must be converted to a full
-        // ISO/RVZ first.
-        if is_nkit_image(path) {
-            return Err(FilesystemError::Unsupported);
-        }
-        let disc = Disc::new(path).map_err(nod_err)?;
+        // Standalone NKit ISO (`*.nkit.iso`) images preserve the disc header (so
+        // they *identify* as a normal GC/Wii disc) but strip the console's junk
+        // padding and compact the gaps between files. `nod` cannot read that
+        // directly, so we reconstruct the original disc on the fly with
+        // [`NkitIsoReader`] and hand `nod` a normal disc stream. Everything after
+        // is identical to a plain disc. A reconstruction failure (unknown
+        // sub-variant, corrupt image) surfaces as a clear error, never a hang.
+        let disc = if is_nkit_image(path) {
+            let reader = crate::nkit_iso::NkitIsoReader::open(path).map_err(|e| {
+                FilesystemError::InvalidData(format!("NKit reconstruction failed: {e}"))
+            })?;
+            Disc::new_stream(Box::new(reader)).map_err(nod_err)?
+        } else {
+            Disc::new(path).map_err(nod_err)?
+        };
         let volume_name = ascii_z(&disc.header().game_title);
         let mut partition = disc
             .open_partition_kind(PartitionKind::Data)
