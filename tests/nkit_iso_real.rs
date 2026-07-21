@@ -57,7 +57,11 @@ fn crc32_stream(mut r: impl Read) -> std::io::Result<u32> {
     for (n, slot) in table.iter_mut().enumerate() {
         let mut c = n as u32;
         for _ in 0..8 {
-            c = if c & 1 != 0 { 0xEDB8_8320 ^ (c >> 1) } else { c >> 1 };
+            c = if c & 1 != 0 {
+                0xEDB8_8320 ^ (c >> 1)
+            } else {
+                c >> 1
+            };
         }
         *slot = c;
     }
@@ -103,7 +107,12 @@ fn browses_and_reconstructs_real_gamecube_nkit_iso() {
                 .and_then(|n| n.to_str())
                 .is_some_and(|n| n.to_ascii_lowercase().ends_with(".nkit.iso"))
         })
-        .map(|p| (std::fs::metadata(&p).map(|m| m.len()).unwrap_or(u64::MAX), p))
+        .map(|p| {
+            (
+                std::fs::metadata(&p).map(|m| m.len()).unwrap_or(u64::MAX),
+                p,
+            )
+        })
         .collect();
     samples.sort();
 
@@ -118,7 +127,11 @@ fn browses_and_reconstructs_real_gamecube_nkit_iso() {
         .and_then(|v| v.parse().ok())
         .unwrap_or(40);
 
-    assert!(!samples.is_empty(), "no *.nkit.iso found in {}", dir.display());
+    assert!(
+        !samples.is_empty(),
+        "no *.nkit.iso found in {}",
+        dir.display()
+    );
     samples.truncate(browse_budget.max(full_hash_budget));
 
     for (idx, (_, path)) in samples.iter().enumerate() {
@@ -139,11 +152,7 @@ fn browses_and_reconstructs_real_gamecube_nkit_iso() {
         let entries = fs
             .list_directory(&root)
             .unwrap_or_else(|e| panic!("list root of {} failed: {e}", path.display()));
-        assert!(
-            !entries.is_empty(),
-            "empty root FST for {}",
-            path.display()
-        );
+        assert!(!entries.is_empty(), "empty root FST for {}", path.display());
 
         // 2b. Extract one real file through nod and confirm it reads at its full
         //     FST-declared length (exercises the byte-for-byte extraction path).

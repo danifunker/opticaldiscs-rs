@@ -189,7 +189,10 @@ fn parse_header(hdr: &[u8], game_id: [u8; 4]) -> io::Result<Header> {
             } else {
                 junk_override
             };
-            Ok(Header { image_size, junk_id })
+            Ok(Header {
+                image_size,
+                junk_id,
+            })
         }
         Some(v) => Err(bad(&format!(
             "standalone NKit v{v} is not supported (only v01); NKit v2 lossless is \
@@ -283,7 +286,12 @@ fn build_layout(file: &File, file_len: u64) -> io::Result<Layout> {
         fst_offset - 0x424,
         SegKind::File { src: 0x424 },
     );
-    push(&mut segs, &mut dst, fst_size_aligned, SegKind::Mem { off: 4 });
+    push(
+        &mut segs,
+        &mut dst,
+        fst_size_aligned,
+        SegKind::Mem { off: 4 },
+    );
     debug_assert_eq!(dst, fst_end);
 
     // Walk the compacted file/gap stream, expanding it back to the full disc.
@@ -692,7 +700,11 @@ fn push(segs: &mut Vec<Segment>, dst: &mut u64, len: u64, kind: SegKind) {
     if len == 0 {
         return;
     }
-    segs.push(Segment { dst: *dst, len, kind });
+    segs.push(Segment {
+        dst: *dst,
+        len,
+        kind,
+    });
     *dst += len;
 }
 
@@ -818,7 +830,9 @@ mod tests {
 
         // File payloads (distinct, verbatim-preserved bytes).
         let file0: Vec<u8> = (0..size0).map(|i| (0xA0u64 ^ i) as u8).collect();
-        let file1: Vec<u8> = (0..size1).map(|i| (0x5Cu64 ^ i.wrapping_mul(7)) as u8).collect();
+        let file1: Vec<u8> = (0..size1)
+            .map(|i| (0x5Cu64 ^ i.wrapping_mul(7)) as u8)
+            .collect();
 
         // ── The .nkit.iso ──
         let mut nkit = vec![0u8; FST_OFF as usize];
@@ -854,12 +868,7 @@ mod tests {
         // Trailing gap: 0x1c leading zeros (the reference "nulls") then junk.
         let junk_start = file1_end + 0x1C;
         let mut lfg = LaggedFibonacci::default();
-        lfg.fill_sector_chunked(
-            &mut disc[junk_start as usize..],
-            GAME_ID,
-            0,
-            junk_start,
-        );
+        lfg.fill_sector_chunked(&mut disc[junk_start as usize..], GAME_ID, 0, junk_start);
 
         (nkit, disc, file0, file1)
     }
@@ -897,7 +906,10 @@ mod tests {
         assert_eq!(reader.seek(SeekFrom::End(0)).unwrap(), IMAGE_SIZE);
         let got = reconstruct_all(&mut reader);
         assert_eq!(got.len(), expected.len());
-        assert!(got == expected, "v1 reconstruction differs from expected disc");
+        assert!(
+            got == expected,
+            "v1 reconstruction differs from expected disc"
+        );
     }
 
     #[test]
@@ -946,7 +958,12 @@ mod tests {
         let tmp = write_temp(&nkit);
         let mut reader = NkitIsoReader::open(tmp.path()).unwrap();
         // Spot-check reads at boundaries and inside the junk region.
-        for &(off, len) in &[(0u64, 0x40usize), (0x1FE, 0x40), (FST_OFF, 8), (0x4820, 0x40)] {
+        for &(off, len) in &[
+            (0u64, 0x40usize),
+            (0x1FE, 0x40),
+            (FST_OFF, 8),
+            (0x4820, 0x40),
+        ] {
             reader.seek(SeekFrom::Start(off)).unwrap();
             let mut buf = vec![0u8; len];
             reader.read_exact(&mut buf).unwrap();
