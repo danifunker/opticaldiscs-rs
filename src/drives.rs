@@ -6,9 +6,12 @@
 //!
 //! - **Linux**: Scans `/sys/block/sr*` for `sr`-class block devices and reads
 //!   the drive model from `/sys/block/srN/device/{vendor,model}`.
-//! - **macOS**: Runs `ioreg -r -c IODVDDriveNub -l` to enumerate DVD drive
-//!   nubs and parses their `BSD Name`, `Vendor Name`, `Product Name`, and
-//!   `Media Present` fields.
+//! - **macOS**: Runs `ioreg -r -c <class> -l -w 0` over each optical-drive
+//!   class (`IO{CD,DVD,BD}Services` for modern, notably USB-attached, drives
+//!   plus the legacy `IO{CD,DVD,BD}DriveNub`) and parses `Vendor Name`,
+//!   `Product Name`, `BSD Name`, and `Media Present` out of each subtree.
+//!   A drive with an empty tray has no `/dev` node at all, so it is reported
+//!   with an empty `device_path` and `is_loaded == false`.
 //! - **Windows**: Enumerates drive letters A–Z with `GetDriveTypeW` and
 //!   identifies `DRIVE_CDROM` entries; uses `GetVolumeInformationW` to
 //!   obtain the disc volume label and confirm that media is present.
@@ -106,80 +109,197 @@ mod imp {
     use std::path::PathBuf;
     use std::process::Command;
 
-    pub fn list() -> Vec<OpticalDrive> {
-        let output = match Command::new("ioreg")
-            .args(["-r", "-c", "IODVDDriveNub", "-l"])
-            .output()
-        {
-            Ok(o) => o,
-            Err(_) => return Vec::new(),
-        };
+    /// IOKit classes that stand for a physical optical drive.
+    ///
+    /// Modern macOS publishes optical drives — notably every USB-attached one —
+    /// as `IO{CD,DVD,BD}Services`. The legacy `IO*DriveNub` classes are queried
+    /// too so internal ATAPI drives on vintage systems keep working. A single
+    /// drive usually answers to more than one of these; [`list`] de-duplicates
+    /// on the registry object id.
+    pub(super) const DRIVE_CLASSES: &[&str] = &[
+        "IOCDServices",
+        "IODVDServices",
+        "IOBDServices",
+        "IOCDDriveNub",
+        "IODVDDriveNub",
+        "IOBDDriveNub",
+    ];
 
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        parse_ioreg_output(&stdout)
+    pub fn list() -> Vec<OpticalDrive> {
+        let mut drives: Vec<OpticalDrive> = Vec::new();
+        let mut seen: Vec<String> = Vec::new();
+
+        for class in DRIVE_CLASSES {
+            // `-w 0` disables ioreg's line wrapping: the drive's identity lives
+            // in a single-line "Device Characteristics" dict that wrapping would
+            // otherwise split mid-value.
+            let Ok(output) = Command::new("ioreg")
+                .args(["-r", "-c", class, "-l", "-w", "0"])
+                .output()
+            else {
+                continue;
+            };
+
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            for (id, drive) in parse_ioreg_entries(&stdout) {
+                match id {
+                    Some(id) if seen.contains(&id) => continue,
+                    Some(id) => seen.push(id),
+                    None => {}
+                }
+                drives.push(drive);
+            }
+        }
+
+        drives.sort_by(|a, b| a.device_path.cmp(&b.device_path));
+        drives
     }
 
-    /// Parse the output of `ioreg -r -c IODVDDriveNub -l` into a list of drives.
+    /// Parse `ioreg -r -c <class> -l -w 0` output into a list of drives.
     pub(super) fn parse_ioreg_output(text: &str) -> Vec<OpticalDrive> {
-        // Each device block starts with a "+-o" line; split on that delimiter.
+        parse_ioreg_entries(text)
+            .into_iter()
+            .map(|(_, d)| d)
+            .collect()
+    }
+
+    /// Parse ioreg output into `(registry object id, drive)` pairs.
+    ///
+    /// `-r` prints one subtree per matched object: the root line starts at
+    /// column 0 and everything indented under it belongs to that drive. The
+    /// disc's `BSD Name` lives on an `IOMedia` node nested inside the subtree,
+    /// so the whole subtree — not just the root's own property block — is
+    /// scanned.
+    fn parse_ioreg_entries(text: &str) -> Vec<(Option<String>, OpticalDrive)> {
         let mut drives = Vec::new();
 
-        for block in text.split("+-o").skip(1) {
-            // Only handle IODVDDriveNub entries.
-            if !block.trim_start().starts_with("IODVDDriveNub") {
+        for subtree in split_subtrees(text) {
+            let header = subtree.lines().next().unwrap_or_default();
+            // Only accept subtrees rooted at a real optical-drive class; the
+            // caller may have piped in unrelated objects.
+            let class = header.trim_start().trim_start_matches("+-o ").trim_start();
+            if !DRIVE_CLASSES.iter().any(|c| class.starts_with(c)) {
                 continue;
             }
 
             let mut vendor = String::new();
             let mut product = String::new();
             let mut bsd_name = String::new();
-            let mut is_loaded = false;
+            let mut media_present: Option<bool> = None;
 
-            for line in block.lines() {
+            for line in subtree.lines() {
                 let line = line.trim();
+                // "Vendor Name" / "Product Name" appear both as standalone
+                // properties (legacy nubs) and inside the one-line "Device
+                // Characteristics" dict (modern services); parse_str_value
+                // handles either spelling.
                 if let Some(v) = parse_str_value(line, "Vendor Name") {
                     vendor = v;
-                } else if let Some(v) = parse_str_value(line, "Product Name") {
+                }
+                if let Some(v) = parse_str_value(line, "Product Name") {
                     product = v;
-                } else if let Some(v) = parse_str_value(line, "BSD Name") {
-                    bsd_name = v;
-                } else if line.contains("\"Media Present\"") {
-                    // Boolean value: `"Media Present" = Yes` or `= No`
-                    is_loaded = line.contains("= Yes");
+                }
+                // Take the whole-disc node (`disk6`), never a partition
+                // (`disk6s1`) — a hybrid disc publishes several of those.
+                if bsd_name.is_empty() {
+                    if let Some(v) = parse_str_value(line, "BSD Name") {
+                        if is_whole_disk(&v) {
+                            bsd_name = v;
+                        }
+                    }
+                }
+                if line.contains("\"Media Present\"") {
+                    // Boolean value: `"Media Present" = Yes` or `=No`.
+                    media_present = Some(line.replace(' ', "").contains("=Yes"));
                 }
             }
 
-            if bsd_name.is_empty() {
-                continue;
-            }
+            // An empty tray has no /dev node at all on macOS, so a missing BSD
+            // name means "no disc" — not "not a drive". The drive is still
+            // listed (matching the Linux behaviour of listing an empty sr0) so
+            // the user can see it is connected and insert a disc.
+            let is_loaded = media_present.unwrap_or(!bsd_name.is_empty());
 
             // Combine Vendor and Product Name, trimming interior whitespace.
             let display_name = {
                 let v = vendor.trim();
                 let p = product.trim();
                 match (v, p) {
-                    ("", p) if !p.is_empty() => p.to_string(),
-                    (v, "") if !v.is_empty() => v.to_string(),
-                    (v, p) if !v.is_empty() => format!("{v} {p}"),
-                    _ => bsd_name.clone(),
+                    ("", "") if !bsd_name.is_empty() => bsd_name.clone(),
+                    ("", "") => "Optical Drive".to_string(),
+                    ("", p) => p.to_string(),
+                    (v, "") => v.to_string(),
+                    (v, p) => format!("{v} {p}"),
                 }
             };
 
-            drives.push(OpticalDrive {
-                device_path: PathBuf::from(format!("/dev/{bsd_name}")),
-                display_name,
-                is_loaded,
-            });
+            let device_path = if bsd_name.is_empty() {
+                PathBuf::new()
+            } else {
+                PathBuf::from(format!("/dev/{bsd_name}"))
+            };
+
+            drives.push((
+                parse_object_id(header),
+                OpticalDrive {
+                    device_path,
+                    display_name,
+                    is_loaded,
+                },
+            ));
         }
 
         drives
     }
 
-    /// Parse a line of the form `"Key" = "value"` and return `"value"`.
+    /// Split ioreg output into one slice per top-level `+-o` subtree.
+    fn split_subtrees(text: &str) -> Vec<&str> {
+        let mut starts: Vec<usize> = Vec::new();
+        let mut offset = 0;
+        for line in text.split_inclusive('\n') {
+            // Only a subtree root is flush against column 0; children are
+            // indented by the tree-drawing prefix.
+            if line.starts_with("+-o") {
+                starts.push(offset);
+            }
+            offset += line.len();
+        }
+
+        starts
+            .iter()
+            .enumerate()
+            .map(|(i, &start)| {
+                let end = starts.get(i + 1).copied().unwrap_or(text.len());
+                &text[start..end]
+            })
+            .collect()
+    }
+
+    /// Pull the registry object id out of a `+-o` header line, e.g.
+    /// `+-o IODVDServices  <class IODVDServices, id 0x1000bccd4, ...>`.
+    fn parse_object_id(header: &str) -> Option<String> {
+        let start = header.find(", id ")? + ", id ".len();
+        let rest = &header[start..];
+        let end = rest.find(&[',', '>'][..])?;
+        Some(rest[..end].trim().to_string())
+    }
+
+    /// Is this a whole-disk BSD name (`disk6`) rather than a partition
+    /// (`disk6s1`)?
+    fn is_whole_disk(name: &str) -> bool {
+        match name.strip_prefix("disk") {
+            Some(rest) => !rest.is_empty() && rest.bytes().all(|b| b.is_ascii_digit()),
+            None => false,
+        }
+    }
+
+    /// Parse a `"Key" = "value"` (or dict-packed `"Key"="value"`) pair out of a
+    /// line and return `"value"`.
     pub(super) fn parse_str_value(line: &str, key: &str) -> Option<String> {
-        let prefix = format!("\"{key}\" = \"");
-        let start = line.find(prefix.as_str())? + prefix.len();
-        let rest = &line[start..];
+        let key_pat = format!("\"{key}\"");
+        let after_key = &line[line.find(key_pat.as_str())? + key_pat.len()..];
+        let after_eq = after_key.trim_start().strip_prefix('=')?.trim_start();
+        let rest = after_eq.strip_prefix('"')?;
         let end = rest.find('"')?;
         Some(rest[..end].to_string())
     }
@@ -419,7 +539,7 @@ mod tests {
         }
 
         #[test]
-        fn parse_ioreg_missing_bsd_name_skipped() {
+        fn parse_ioreg_missing_bsd_name_still_lists_the_drive() {
             let text = concat!(
                 "+-o IODVDDriveNub  <class IODVDDriveNub>\n",
                 "  {\n",
@@ -427,9 +547,101 @@ mod tests {
                 "    \"Media Present\" = No\n",
                 "  }\n"
             );
-            // No BSD Name → should be skipped.
+            // An empty tray has no /dev node on macOS. The drive is connected,
+            // so it is listed with no path rather than hidden.
             let drives = imp::parse_ioreg_output(text);
-            assert!(drives.is_empty());
+            assert_eq!(drives.len(), 1);
+            assert_eq!(drives[0].display_name, "DVDRAM GH22NS90");
+            assert_eq!(drives[0].device_path.as_os_str(), "");
+            assert!(!drives[0].is_loaded);
+        }
+
+        /// Verbatim `ioreg -r -c IODVDServices -l -w 0` output for a USB
+        /// HL-DT-ST GP65NW60, the shape that `IODVDDriveNub`-only enumeration
+        /// missed entirely.
+        const USB_DVD_SERVICES: &str = concat!(
+            "+-o IODVDServices  <class IODVDServices, id 0x1000bccd4, registered, matched, active, busy 0 (374 ms), retain 8>\n",
+            "  | {\n",
+            "  |   \"device-type\" = \"DVD\"\n",
+            "  |   \"Protocol Characteristics\" = {\"Physical Interconnect\"=\"USB\",\"SCSI Logical Unit Number\"=0,\"Physical Interconnect Location\"=\"External\"}\n",
+            "  |   \"Device Characteristics\" = {\"Product Name\"=\"DVDRAM GP65NW60\",\"Power Off\"=No,\"CD Features\"=2047,\"Vendor Name\"=\"HL-DT-ST\",\"Loading Mechanism\"=\"Tray\",\"Product Revision Level\"=\"RF01\"}\n",
+            "  | }\n",
+            "  | \n",
+            "  +-o IODVDBlockStorageDriver  <class IODVDBlockStorageDriver, id 0x1000bccd6, registered, matched, active, busy 0, retain 7>\n",
+            "    +-o IODVDMedia  <class IODVDMedia, id 0x1000bccd9, registered, matched, active, busy 0, retain 6>\n",
+            "      | {\n",
+            "      |   \"Whole\" = Yes\n",
+            "      |   \"BSD Name\" = \"disk6\"\n",
+            "      |   \"Ejectable\" = Yes\n",
+            "      | }\n",
+            "      +-o IOMediaBSDClient  <class IOMediaBSDClient, id 0x1000bccdb, registered, matched, active, busy 0, retain 4>\n",
+        );
+
+        #[test]
+        fn parse_ioreg_usb_dvd_services_with_disc() {
+            let drives = imp::parse_ioreg_output(USB_DVD_SERVICES);
+            assert_eq!(drives.len(), 1);
+            // Identity comes out of the single-line Device Characteristics dict.
+            assert_eq!(drives[0].display_name, "HL-DT-ST DVDRAM GP65NW60");
+            // BSD Name comes from the nested IODVDMedia node, not the root.
+            assert_eq!(drives[0].device_path.to_str().unwrap(), "/dev/disk6");
+            assert!(drives[0].is_loaded);
+        }
+
+        #[test]
+        fn parse_ioreg_usb_dvd_services_empty_tray() {
+            // Same drive, disc ejected: the IODVDBlockStorageDriver has no
+            // media child at all.
+            let text = concat!(
+                "+-o IODVDServices  <class IODVDServices, id 0x1000bccd4, registered, matched, active, busy 0, retain 8>\n",
+                "  | {\n",
+                "  |   \"Device Characteristics\" = {\"Product Name\"=\"DVDRAM GP65NW60\",\"Vendor Name\"=\"HL-DT-ST\"}\n",
+                "  | }\n",
+                "  +-o IODVDBlockStorageDriver  <class IODVDBlockStorageDriver, id 0x1000bccd6, registered, matched, active, busy 0, retain 7>\n",
+            );
+            let drives = imp::parse_ioreg_output(text);
+            assert_eq!(drives.len(), 1);
+            assert_eq!(drives[0].display_name, "HL-DT-ST DVDRAM GP65NW60");
+            assert_eq!(drives[0].device_path.as_os_str(), "");
+            assert!(!drives[0].is_loaded);
+        }
+
+        #[test]
+        fn parse_ioreg_ignores_partition_bsd_names() {
+            // A hybrid ISO9660/HFS disc publishes disk6s1, disk6s1s2, ... The
+            // whole-disc node is the only correct rip target.
+            let text = concat!(
+                "+-o IOCDServices  <class IOCDServices, id 0x100000001, registered>\n",
+                "  +-o IOCDMedia  <class IOCDMedia, id 0x100000002, registered>\n",
+                "      |   \"BSD Name\" = \"disk6s1\"\n",
+                "      |   \"Whole\" = No\n",
+                "  +-o IOCDMedia  <class IOCDMedia, id 0x100000003, registered>\n",
+                "      |   \"BSD Name\" = \"disk6\"\n",
+                "      |   \"Whole\" = Yes\n",
+            );
+            let drives = imp::parse_ioreg_output(text);
+            assert_eq!(drives.len(), 1);
+            assert_eq!(drives[0].device_path.to_str().unwrap(), "/dev/disk6");
+        }
+
+        #[test]
+        fn parse_ioreg_separates_two_subtrees() {
+            let text = format!("{USB_DVD_SERVICES}{USB_DVD_SERVICES}");
+            // Two roots parse as two drives (list() de-duplicates on object id).
+            assert_eq!(imp::parse_ioreg_output(&text).len(), 2);
+        }
+
+        #[test]
+        fn parse_str_value_handles_dict_packed_pairs() {
+            let line = r#"  |   "Device Characteristics" = {"Product Name"="GP65NW60","Vendor Name"="HL-DT-ST"}"#;
+            assert_eq!(
+                imp::parse_str_value(line, "Vendor Name").as_deref(),
+                Some("HL-DT-ST")
+            );
+            assert_eq!(
+                imp::parse_str_value(line, "Product Name").as_deref(),
+                Some("GP65NW60")
+            );
         }
     }
 }

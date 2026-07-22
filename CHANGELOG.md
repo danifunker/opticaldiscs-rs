@@ -3,6 +3,42 @@
 All notable changes to this crate are documented here. This project follows
 [Semantic Versioning](https://semver.org/).
 
+## 0.12.1
+
+### Fixed — macOS optical drives (USB drives were invisible)
+
+- **`drives::list_drives` found no drives at all on modern macOS.** The
+  enumerator ran `ioreg -r -c IODVDDriveNub`, but that class is not what macOS
+  publishes for USB-attached optical drives — they register as
+  `IODVDServices` (and `IOCDServices` / `IOBDServices` for CD- and BD-class
+  drives). On a machine whose only optical drive is external, `IODVDDriveNub`
+  matches **zero** registry objects, so the call returned an empty `Vec` and
+  callers reported "no optical drives connected". Verified against a USB
+  HL-DT-ST DVDRAM GP65NW60, which now enumerates as `/dev/disk6`.
+- All six drive classes are now queried (`IO{CD,DVD,BD}Services` plus the legacy
+  `IO{CD,DVD,BD}DriveNub`, kept for internal ATAPI drives on older systems), and
+  results are de-duplicated on the IOKit registry object id — one drive normally
+  answers to more than one class.
+- **Drive identity is parsed from the `Device Characteristics` dict.** Modern
+  ioreg output packs `Vendor Name` / `Product Name` into a single-line dict
+  written `"Vendor Name"="HL-DT-ST"` — no spaces around the `=`. The old parser
+  only accepted the spaced `"Key" = "value"` spelling, so even a matched drive
+  would have come out unnamed. `parse_str_value` now accepts either spelling.
+- **`BSD Name` is read from the nested `IOMedia` node.** The disc's device node
+  is published on a descendant of the drive, not on the drive object itself; the
+  old parser split the output on every `+-o` occurrence, which put children in
+  separate chunks and made the nested value unreachable. Parsing is now
+  indentation-aware: each top-level `+-o` subtree is scanned as one unit.
+- **Partition nodes are no longer mistaken for the disc.** A hybrid
+  ISO9660/HFS disc publishes `disk6s1`, `disk6s1s2`, … alongside the whole-disc
+  `disk6`; only the whole-disc node (`disk<digits>`) is now accepted as the
+  device path.
+- **A drive with an empty tray is listed instead of hidden.** macOS creates no
+  `/dev` node until media is loaded, and the old code skipped any entry without
+  a `BSD Name` — so a connected but empty drive vanished from the list entirely.
+  Such a drive is now reported with an empty `device_path` and
+  `is_loaded == false`, matching the Linux behaviour of listing an empty `sr0`.
+
 ## 0.12.0
 
 ### Added — native browsing of standalone NKit ISO images (GameCube)
