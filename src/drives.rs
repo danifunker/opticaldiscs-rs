@@ -156,6 +156,10 @@ mod imp {
     }
 
     /// Parse `ioreg -r -c <class> -l -w 0` output into a list of drives.
+    ///
+    /// Test-only view of [`parse_ioreg_entries`] that drops the registry ids;
+    /// [`list`] needs the ids to de-duplicate a drive matched by several classes.
+    #[cfg(test)]
     pub(super) fn parse_ioreg_output(text: &str) -> Vec<OpticalDrive> {
         parse_ioreg_entries(text)
             .into_iter()

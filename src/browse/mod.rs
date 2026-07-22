@@ -91,20 +91,39 @@ pub fn open_disc_filesystem(info: &DiscImageInfo) -> Result<Box<dyn Filesystem>,
         return Ok(Box::new(NodeFilesystem::new(&info.path)?));
     }
 
-    let mut reader = open_sector_reader(info)?;
+    let reader = open_sector_reader(info)?;
 
-    match info.filesystem {
+    // EFS is the one reader-backed filesystem whose constructor needs something
+    // only `info` carries (the partition offset), so it can't go through the
+    // source-agnostic dispatch below.
+    if info.filesystem == FilesystemType::Efs {
+        let partition_offset = info.efs_partition_offset.ok_or_else(|| {
+            FilesystemError::InvalidData("EFS detected but partition offset not recorded".into())
+        })?;
+        return Ok(Box::new(EfsFilesystem::new(reader, partition_offset)?));
+    }
+
+    open_filesystem_from_reader(reader, info.filesystem)
+}
+
+/// Build a [`Filesystem`] over an already-open [`SectorReader`], given the
+/// filesystem type detected on it.
+///
+/// This is the source-agnostic half of [`open_disc_filesystem`]: it does not
+/// care whether the sectors come from an image file or from a disc spinning in a
+/// drive, which is what lets [`open_physical_filesystem`] reuse the whole
+/// filesystem stack.
+///
+/// Filesystems that need more than sectors are not reachable here and return
+/// [`FilesystemError::Unsupported`]: GameCube/Wii are browsed from a file path
+/// by `nod`, and EFS needs a partition offset recorded during detection.
+pub fn open_filesystem_from_reader(
+    mut reader: Box<dyn SectorReader>,
+    filesystem: FilesystemType,
+) -> Result<Box<dyn Filesystem>, FilesystemError> {
+    match filesystem {
         FilesystemType::Iso9660 | FilesystemType::HighSierra => {
             Ok(Box::new(Iso9660Filesystem::new(reader)?))
-        }
-
-        FilesystemType::Efs => {
-            let partition_offset = info.efs_partition_offset.ok_or_else(|| {
-                FilesystemError::InvalidData(
-                    "EFS detected but partition offset not recorded".into(),
-                )
-            })?;
-            Ok(Box::new(EfsFilesystem::new(reader, partition_offset)?))
         }
 
         FilesystemType::Ufs => Ok(Box::new(UfsFilesystem::new(reader)?)),
@@ -137,6 +156,25 @@ pub fn open_disc_filesystem(info: &DiscImageInfo) -> Result<Box<dyn Filesystem>,
 
         _ => Err(FilesystemError::Unsupported),
     }
+}
+
+/// Browse the disc currently loaded in a physical drive.
+///
+/// `device_path` is what [`crate::drives::list_drives`] reports (e.g.
+/// `/dev/disk6`). The medium is read as cooked 2048-byte sectors via
+/// [`crate::physical::PhysicalDisc`], so this works for data CD, **DVD and
+/// Blu-ray** alike — none of which need the CD-only MMC commands that a
+/// pass-through reader would have to issue.
+///
+/// Audio CDs are out of scope: their sectors have no cooked form, so detection
+/// finds no filesystem and this returns [`FilesystemError::Unsupported`].
+#[cfg(feature = "drives")]
+pub fn open_physical_filesystem(
+    device_path: impl AsRef<std::path::Path>,
+) -> Result<Box<dyn Filesystem>, FilesystemError> {
+    let mut disc = crate::physical::PhysicalDisc::open(device_path).map_err(disc_err)?;
+    let filesystem = crate::detect::detect_filesystem(&mut disc).map_err(disc_err)?;
+    open_filesystem_from_reader(Box::new(disc), filesystem)
 }
 
 /// Open one of the disc's [`DiscImageInfo::hybrid_filesystems`] — the Apple_HFS

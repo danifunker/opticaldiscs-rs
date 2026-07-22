@@ -3,6 +3,46 @@
 All notable changes to this crate are documented here. This project follows
 [Semantic Versioning](https://semver.org/).
 
+## 0.13.0
+
+### Added — reading DVD and Blu-ray discs from a physical drive
+
+- **`physical` module** with **`PhysicalDisc`** (`src/physical.rs`, feature
+  `drives`): a `SectorReader` backed by a drive's device node instead of an image
+  file. Because it implements the same trait every image format does, the entire
+  existing stack — detection, browse, extraction — works against a disc in the
+  tray with no format-specific code.
+- **This is what makes DVD and Blu-ray work.** Physical-disc reading is
+  conventionally done with MMC/SCSI pass-through (`READ CD`, `READ TOC`), which
+  is unavoidable for CD because a CD's sectors are 2352 bytes on the wire. Those
+  commands are **CD-only**: on macOS `DKIOCCDREADTOC` / `DKIOCCDREAD` against DVD
+  or Blu-ray media fail outright with `ENOTTY`, so a pass-through reader cannot
+  read a DVD at all — not even its table of contents.
+- A **data** DVD or Blu-ray needs none of that. The drive already presents the
+  medium as a flat run of 2048-byte cooked sectors, which is exactly the shape
+  `SectorReader` is defined in terms of, so an ordinary `seek` + `read` is both
+  sufficient and portable. DVD/BD support therefore costs **zero** ioctls.
+- **`browse::open_physical_filesystem(device_path)`** browses the loaded disc
+  directly: detect the filesystem off the device, then hand the reader to the
+  normal filesystem stack. Verified end-to-end against a DVD-Video disc in a USB
+  HL-DT-ST DVDRAM GP65NW60 — volume `HANCOCK`, root listing `AUDIO_TS` /
+  `VIDEO_TS`.
+- **`browse::open_filesystem_from_reader(reader, filesystem)`** is the new
+  source-agnostic half of `open_disc_filesystem`, so image-backed and
+  device-backed discs share one dispatch. `open_disc_filesystem` keeps its exact
+  previous behaviour; EFS still takes the path that supplies its partition
+  offset, and GameCube/Wii still go to `nod` by file path.
+- Medium capacity comes from the **generic** block-device ioctls
+  (`DKIOCGETBLOCKCOUNT`/`DKIOCGETBLOCKSIZE` on macOS, `BLKGETSIZE64` on Linux),
+  which — unlike the `DKIOCCD*` family — answer for DVD and Blu-ray too.
+  `lseek(SEEK_END)` is not usable as the primary probe: it reports 0 on a macOS
+  raw disk device. Adds a unix-only `libc` dependency for those two calls.
+- On macOS the raw node (`/dev/rdiskN`) is used deliberately: the buffered
+  `/dev/diskN` returns `EBUSY` while the disc is mounted, whereas the raw node
+  reads fine.
+- **Audio CDs remain out of scope** here — their sectors have no cooked form, so
+  they genuinely do need MMC pass-through.
+
 ## 0.12.1
 
 ### Fixed — macOS optical drives (USB drives were invisible)

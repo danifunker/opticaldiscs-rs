@@ -1,6 +1,6 @@
 [package]
 name = "opticaldiscs"
-version = "0.12.1"
+version = "0.13.0"
 edition = "2021"
 license = "GPL-3.0"
 description = "Format-agnostic optical disc image reading and filesystem browsing (ISO, BIN/CUE, CHD)"
@@ -34,6 +34,12 @@ nod = "1.4"
 aes    = { version = "0.8", optional = true }
 pbkdf2 = { version = "0.12", optional = true, default-features = false, features = ["hmac"] }
 ripemd = { version = "0.1", optional = true }
+
+# Medium-capacity ioctls for physical drives (feature "drives"). Unix only:
+# lseek(SEEK_END) reports 0 on a macOS raw disk device, so the size has to come
+# from DKIOCGETBLOCKCOUNT / BLKGETSIZE64.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 
 [dev-dependencies]
 tempfile = "3"

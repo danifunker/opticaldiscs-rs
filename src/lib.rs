@@ -107,6 +107,8 @@ pub mod efs;
 // Phase 9
 #[cfg(feature = "drives")]
 pub mod drives;
+#[cfg(feature = "drives")]
+pub mod physical;
 
 // ── Top-level re-exports ──────────────────────────────────────────────────────
 
