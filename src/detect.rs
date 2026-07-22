@@ -143,6 +143,11 @@ pub struct DiscImageInfo {
     pub hybrid_filesystems: Vec<HybridFilesystem>,
     /// Volume label extracted from the filesystem, if available.
     pub volume_label: Option<String>,
+    /// Capacity of the physical medium in bytes, when known.
+    ///
+    /// Populated by [`DiscImageInfo::open_physical`] from the drive's reported
+    /// block count. `None` for an image file, whose size is just the file's.
+    pub media_size_bytes: Option<u64>,
     /// Parsed ISO 9660 Primary Volume Descriptor, if present.
     pub pvd: Option<PrimaryVolumeDescriptor>,
     /// HFS Master Directory Block, if the disc is an HFS volume.
@@ -251,6 +256,7 @@ impl DiscImageInfo {
             filesystem,
             hybrid_filesystems: Vec::new(),
             volume_label: game.title.clone(),
+            media_size_bytes: None,
             pvd: None,
             hfs_mdb: None,
             hfsplus_header: None,
@@ -303,6 +309,12 @@ impl DiscImageInfo {
         if volume_label.is_none() && filesystem == FilesystemType::Opera {
             volume_label = crate::browse::opera::read_label(reader);
         }
+        // UDF carries its name in the Logical Volume Descriptor, not a PVD. A
+        // DVD-Video / Blu-ray disc probes as UDF, so without this it reported no
+        // volume label at all even though browsing showed the name.
+        if volume_label.is_none() && filesystem == FilesystemType::Udf {
+            volume_label = crate::browse::udf::read_label(reader);
+        }
 
         let game = crate::gameid::detect_game_disc_opts(reader, pvd.as_ref(), !prefer_iso);
 
@@ -315,6 +327,9 @@ impl DiscImageInfo {
             filesystem,
             hybrid_filesystems,
             volume_label,
+            // Only a physical medium has a capacity distinct from its content;
+            // `open_physical` fills this in after the probe.
+            media_size_bytes: None,
             pvd,
             hfs_mdb,
             hfsplus_header,
@@ -499,6 +514,38 @@ impl DiscImageInfo {
         )
     }
 
+    /// Probe the disc currently loaded in a **physical drive**.
+    ///
+    /// [`DiscImageInfo::open`] is file-oriented: it sniffs a container format
+    /// from the path's extension and magic bytes, then opens that file. Pointed
+    /// at a drive it does the wrong thing — and on macOS it does not even get
+    /// that far, because the buffered `/dev/diskN` node returns `EBUSY` while the
+    /// disc is mounted.
+    ///
+    /// This opens the medium through [`crate::physical::PhysicalDisc`] instead
+    /// (which reads the raw node, unaffected by the mount) and probes it as the
+    /// flat run of 2048-byte cooked sectors that a data CD, **DVD or Blu-ray**
+    /// actually is. There is no container to detect, so the format is reported
+    /// as [`DiscFormat::Iso`] — a physical data disc and a plain `.iso` present
+    /// byte-identically.
+    ///
+    /// `path` on the returned value is the device path that was opened.
+    #[cfg(feature = "drives")]
+    pub fn open_physical(device_path: impl AsRef<Path>) -> Result<Self> {
+        let device_path = device_path.as_ref();
+        let mut disc = crate::physical::PhysicalDisc::open(device_path)?;
+        let media_size_bytes = disc.size_bytes();
+        let mut info = Self::build(
+            device_path,
+            DiscFormat::Iso,
+            &mut disc,
+            #[cfg(feature = "toc")]
+            None,
+        )?;
+        info.media_size_bytes = media_size_bytes;
+        Ok(info)
+    }
+
     /// Probe a PSP `.cso` (CISOv1) image: decompress on the fly and probe the
     /// underlying ISO 9660 volume.
     fn probe_cso(path: &Path) -> Result<Self> {
@@ -546,6 +593,7 @@ impl DiscImageInfo {
                     filesystem: FilesystemType::Unknown,
                     hybrid_filesystems: Vec::new(),
                     volume_label: None,
+                    media_size_bytes: None,
                     pvd: None,
                     hfs_mdb: None,
                     hfsplus_header: None,

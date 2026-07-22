@@ -117,6 +117,37 @@ fn unpack_loc(loc: u64) -> (u64, usize) {
     (loc & 0x0000_FFFF_FFFF_FFFF, (loc >> 48) as usize)
 }
 
+/// Read just the UDF volume identifier, without building a whole filesystem.
+///
+/// [`crate::detect::DiscImageInfo`] needs the label during probing, where it has
+/// only a `&mut dyn SectorReader` and cannot hand the owned `Box` that
+/// [`UdfFilesystem::new`] requires. Mirrors `cdi::read_volume_id` /
+/// `opera::read_label`.
+///
+/// Walks AVDP → Volume Descriptor Sequence and decodes the Logical Volume
+/// Descriptor's identifier dstring. Returns `None` for anything that is not a
+/// readable UDF volume.
+pub(crate) fn read_label(reader: &mut dyn SectorReader) -> Option<String> {
+    let avdp = read_tagged(reader, AVDP_LSN * SECTOR, TAG_AVDP)
+        .or_else(|_| read_tagged(reader, 512 * SECTOR, TAG_AVDP))
+        .ok()?;
+    let vds_len = u32(&avdp, 16) as u64;
+    let vds_loc = u32(&avdp, 20) as u64;
+
+    for i in 0..vds_len.div_ceil(SECTOR) {
+        let d = match reader.read_bytes((vds_loc + i) * SECTOR, SECTOR as usize) {
+            Ok(b) if b.len() >= SECTOR as usize => b,
+            _ => break,
+        };
+        match tag_id(&d) {
+            TAG_LOGICAL_VOLUME => return decode_dstring(&d[84..84 + 128]),
+            TAG_TERMINATING => break,
+            _ => {}
+        }
+    }
+    None
+}
+
 impl UdfFilesystem {
     /// Open a UDF volume, walking AVDP → VDS → FSD to locate the root directory.
     pub fn new(mut reader: Box<dyn SectorReader>) -> Result<Self, FilesystemError> {

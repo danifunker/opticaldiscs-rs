@@ -93,10 +93,25 @@ impl PhysicalDisc {
     pub fn sector_count(&self) -> Option<u64> {
         self.size_bytes.map(|b| b / SECTOR_SIZE)
     }
-}
 
-impl SectorReader for PhysicalDisc {
-    fn read_sector(&mut self, lba: u64) -> Result<Vec<u8>> {
+    /// Read `count` consecutive sectors in a **single** seek + read.
+    ///
+    /// Strongly prefer this over looping [`SectorReader::read_sector`] when
+    /// reading a run of sectors. An optical drive pays roughly a hundred
+    /// milliseconds of rotational and seek latency per I/O, so one request per
+    /// 2048-byte sector is catastrophic: measured against a DVD-R, sector-at-a-
+    /// time reads managed ~10 KB/s, which works out to *days* for a full 4.7 GB
+    /// disc. Reading a large run per request is what makes a full-disc rip
+    /// finish in a sane amount of time.
+    ///
+    /// Returns `count * 2048` bytes. A short read (past the end of the medium,
+    /// or a hard read error) is reported as an error rather than a truncated
+    /// buffer.
+    pub fn read_sectors(&mut self, lba: u64, count: u32) -> Result<Vec<u8>> {
+        if count == 0 {
+            return Ok(Vec::new());
+        }
+
         let offset = lba
             .checked_mul(SECTOR_SIZE)
             .ok_or_else(|| OpticaldiscsError::InvalidData(format!("sector {lba} out of range")))?;
@@ -108,10 +123,39 @@ impl SectorReader for PhysicalDisc {
         // Whole sectors only — a raw character device rejects partial or
         // unaligned reads, and `read_exact` would otherwise be free to stop
         // short at a medium error.
-        let mut buf = vec![0u8; SECTOR_SIZE as usize];
+        let len = (count as usize) * (SECTOR_SIZE as usize);
+        let mut buf = vec![0u8; len];
         self.device
             .read_exact(&mut buf)
             .map_err(OpticaldiscsError::Io)?;
+        Ok(buf)
+    }
+}
+
+impl SectorReader for PhysicalDisc {
+    fn read_sector(&mut self, lba: u64) -> Result<Vec<u8>> {
+        self.read_sectors(lba, 1)
+    }
+
+    fn read_bytes(&mut self, byte_offset: u64, length: usize) -> Result<Vec<u8>> {
+        if length == 0 {
+            return Ok(Vec::new());
+        }
+
+        // Round out to whole sectors and slice the result: the device cannot
+        // serve an unaligned read, but doing it as one request rather than one
+        // per sector is what keeps browsing a disc responsive.
+        let first = byte_offset / SECTOR_SIZE;
+        let skip = (byte_offset % SECTOR_SIZE) as usize;
+        let span = skip + length;
+        let sectors = span.div_ceil(SECTOR_SIZE as usize);
+        let count = u32::try_from(sectors).map_err(|_| {
+            OpticaldiscsError::InvalidData(format!("{length}-byte read is too large"))
+        })?;
+
+        let mut buf = self.read_sectors(first, count)?;
+        buf.drain(..skip);
+        buf.truncate(length);
         Ok(buf)
     }
 }
@@ -277,6 +321,28 @@ mod tests {
         );
     }
 
+    /// Hardware-gated: probe disc info straight off the drive. `DiscImageInfo::
+    /// open` on a device path fails here with `EBUSY` whenever the disc is
+    /// mounted, which is what the GUI's disc-info detection used to hit.
+    #[test]
+    fn probes_disc_info_on_a_real_drive() {
+        let Some(drive) = crate::drives::list_drives()
+            .into_iter()
+            .find(|d| d.is_loaded && !d.device_path.as_os_str().is_empty())
+        else {
+            eprintln!("no loaded optical drive present — skipping");
+            return;
+        };
+
+        match crate::detect::DiscImageInfo::open_physical(&drive.device_path) {
+            Ok(info) => eprintln!(
+                "{}: format={:?} fs={:?} volume={:?}",
+                drive.display_name, info.format, info.filesystem, info.volume_label
+            ),
+            Err(e) => panic!("open_physical failed on {}: {e}", drive.display_name),
+        }
+    }
+
     /// Hardware-gated end-to-end check: detect the filesystem on a real disc and
     /// list its root. This is the path that previously died with `ENOTTY` on
     /// DVD media.
@@ -303,13 +369,28 @@ mod tests {
         let root = fs.root().expect("read disc root");
         let entries = fs.list_directory(&root).expect("list disc root");
         eprintln!(
-            "{}: volume={:?}, {} entries at root",
+            "{}: volume={:?}, root name={:?}, {} entries",
             drive.display_name,
             fs.volume_name(),
+            root.name,
             entries.len()
         );
         for e in entries.iter().take(10) {
-            eprintln!("  {}", e.name);
+            eprintln!("  {} dir={} size={}", e.name, e.is_directory(), e.size);
+        }
+
+        // Descend one level: a DVD-Video root holds only AUDIO_TS / VIDEO_TS, so
+        // files only show up inside them.
+        for dir in entries.iter().filter(|e| e.is_directory()) {
+            match fs.list_directory(dir) {
+                Ok(children) => {
+                    eprintln!("  {}/ -> {} entries", dir.name, children.len());
+                    for c in children.iter().take(6) {
+                        eprintln!("      {} dir={} size={}", c.name, c.is_directory(), c.size);
+                    }
+                }
+                Err(e) => eprintln!("  {}/ -> ERROR: {e}", dir.name),
+            }
         }
     }
 }

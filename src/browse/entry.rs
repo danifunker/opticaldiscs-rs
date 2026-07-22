@@ -206,7 +206,10 @@ impl FileEntry {
 
     pub fn root(location: u64) -> Self {
         Self {
-            name: String::new(),
+            // "/" rather than empty: the root is a real, displayable node. An
+            // empty name gave callers a tree node they could not label or click,
+            // so every browser had to special-case it back to "/" itself.
+            name: "/".to_string(),
             path: "/".to_string(),
             entry_type: EntryType::Directory,
             size: 0,
@@ -291,7 +294,9 @@ mod tests {
     fn root_entry() {
         let e = FileEntry::root(16);
         assert_eq!(e.path, "/");
-        assert!(e.name.is_empty());
+        // The root names itself "/" so browsers get a displayable node instead
+        // of having to substitute one for an empty string.
+        assert_eq!(e.name, "/");
         assert!(e.is_directory());
         assert_eq!(e.location, 16);
     }

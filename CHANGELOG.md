@@ -42,6 +42,32 @@ All notable changes to this crate are documented here. This project follows
   reads fine.
 - **Audio CDs remain out of scope** here — their sectors have no cooked form, so
   they genuinely do need MMC pass-through.
+- **`PhysicalDisc::read_sectors(lba, count)`** reads a run of sectors in a single
+  seek + read, and `read_bytes` is overridden to do the same. This is not a
+  micro-optimisation: an optical drive charges seek and rotational latency *per
+  I/O*, so reading one 2048-byte sector per request measured **~10 KB/s** against
+  a DVD-R — days for a full disc. Reading the whole run per request measured
+  **4.15 MB/s** on the same disc and drive.
+- **`DiscImageInfo::open_physical(device)`** probes a loaded disc directly.
+  [`DiscImageInfo::open`] is file-oriented — it sniffs a container format from the
+  path — and on macOS it cannot even open a drive whose disc is mounted, because
+  the buffered `/dev/diskN` node returns `EBUSY`. The physical probe reads the raw
+  node as flat cooked sectors instead.
+- **`DiscImageInfo::media_size_bytes`** reports the medium's capacity (from the
+  drive's block count), so callers can show what a full rip will cost before
+  starting one. `None` for image files, whose size is just the file's.
+
+### Fixed
+
+- **UDF volumes now report a volume label.** `volume_label` was populated from the
+  ISO 9660 PVD, HFS, SGI, CD-i and Opera, but never UDF — which keeps its name in
+  the Logical Volume Descriptor, not a PVD. Every DVD-Video and Blu-ray disc
+  therefore probed with no label at all, even though browsing showed the name.
+  Adds `udf::read_label`, mirroring the existing CD-i / Opera helpers.
+- **The root directory entry now names itself `"/"`** instead of an empty string.
+  An unnamed root gave browsers a tree node they could neither label nor click, so
+  each one had to substitute `"/"` for itself. Fixed centrally in
+  `FileEntry::root`, so every filesystem benefits rather than one at a time.
 
 ## 0.12.1
 
