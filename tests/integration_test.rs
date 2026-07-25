@@ -245,7 +245,7 @@ fn disc_image_info_open_bincue() {
 // stays green without requiring chdman.
 
 /// Return the path to the CHD test fixture, or `None` if it is not present.
-#[cfg(test)]
+#[cfg(all(test, feature = "chd"))]
 fn fixture_chd_path() -> Option<std::path::PathBuf> {
     let path = std::path::Path::new("tests/fixtures/data.chd");
     if path.exists() {
@@ -255,6 +255,7 @@ fn fixture_chd_path() -> Option<std::path::PathBuf> {
     }
 }
 
+#[cfg(feature = "chd")]
 #[test]
 fn open_chd_missing_file_returns_io_error() {
     use opticaldiscs::chd::open_chd;
@@ -263,6 +264,7 @@ fn open_chd_missing_file_returns_io_error() {
     assert!(matches!(err, OpticaldiscsError::Io(_)));
 }
 
+#[cfg(feature = "chd")]
 #[test]
 fn chd_sector_reader_reads_pvd() {
     use opticaldiscs::chd::open_chd;
@@ -286,6 +288,7 @@ fn chd_sector_reader_reads_pvd() {
     assert!(!pvd.volume_id.is_empty(), "volume_id should be non-empty");
 }
 
+#[cfg(feature = "chd")]
 #[test]
 fn disc_image_info_open_chd() {
     use opticaldiscs::detect::DiscImageInfo;
@@ -303,6 +306,57 @@ fn disc_image_info_open_chd() {
     assert_eq!(info.format, DiscFormat::Chd);
     assert_eq!(info.filesystem, FilesystemType::Iso9660);
     assert!(info.volume_label.is_some());
+}
+
+// ── Feature `chd` off: recognised, but not openable ───────────────────────────
+
+/// Without `chd`, a real CHD is still *identified* — only the read path is gone.
+///
+/// This is the contract the decoupling rests on: a consumer can name the format
+/// in an error message or a UI listing even in a build that cannot open it.
+#[cfg(not(feature = "chd"))]
+#[test]
+fn chd_recognised_but_open_fails_without_feature() {
+    use opticaldiscs::detect::{detect_format, DiscImageInfo};
+    use opticaldiscs::{DiscFormat, OpticaldiscsError};
+    use std::io::Write;
+
+    let mut f = tempfile::Builder::new().suffix(".chd").tempfile().unwrap();
+    f.write_all(b"MComprHD").unwrap();
+    f.write_all(&[0u8; 512]).unwrap();
+    f.flush().unwrap();
+
+    // Detection still works — by extension and by magic.
+    assert_eq!(detect_format(f.path()).unwrap(), DiscFormat::Chd);
+
+    // Opening reports the missing feature rather than an unknown format.
+    let err = DiscImageInfo::open(f.path()).unwrap_err();
+    match err {
+        OpticaldiscsError::UnsupportedFormat(msg) => {
+            assert!(
+                msg.contains("CHD support was not compiled in"),
+                "got: {msg}"
+            );
+        }
+        other => panic!("expected UnsupportedFormat, got {other:?}"),
+    }
+}
+
+/// The runtime query must agree with the compiled feature set.
+#[test]
+fn chd_runtime_support_query_matches_build() {
+    use opticaldiscs::DiscFormat;
+
+    assert_eq!(opticaldiscs::chd::is_supported(), cfg!(feature = "chd"));
+    assert_eq!(DiscFormat::Chd.is_supported(), cfg!(feature = "chd"));
+
+    // Unconditional formats are always supported; `.chd` is always *recognised*.
+    assert!(DiscFormat::Iso.is_supported());
+    assert!(opticaldiscs::supported_extensions().contains(&"chd"));
+    assert_eq!(
+        opticaldiscs::enabled_extensions().contains(&"chd"),
+        cfg!(feature = "chd")
+    );
 }
 
 // ── Phase 6: Disc Detection ───────────────────────────────────────────────────

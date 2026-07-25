@@ -32,8 +32,18 @@ jobs:
         run: cargo build --all-features
       - name: Test
         run: cargo test --all-features
-      - name: Test (no features)
+      - name: Test (default features)
         run: cargo test
+      # The decoupled build: no libchdman-rs in the dependency graph at all, so
+      # this leg is what proves targets that can't build/fetch MAME's C++ CHD
+      # core (vintage/cross: i486, PPC, macOS 10.7) still get the rest of the
+      # crate. `--no-default-features` drops `chd`, which is in `default`.
+      - name: Test (no features — no CHD / no libchdman-rs)
+        run: cargo test --no-default-features
+      # `toc` without `chd` is a real consumer combination and gates
+      # `build_chd_toc` on both features; keep it compiling.
+      - name: Test (toc + drives, no CHD)
+        run: cargo test --no-default-features --features toc,drives
 
   lint:
     name: Lint
@@ -52,6 +62,10 @@ jobs:
         run: cargo fmt --check
       - name: Clippy
         run: cargo clippy --all-features -- -D warnings
+      # Feature-gating mistakes (unused imports, dead code) only show up in the
+      # build that omits the feature, so lint that configuration too.
+      - name: Clippy (no features — no CHD)
+        run: cargo clippy --no-default-features -- -D warnings
 
   docs:
     name: Docs

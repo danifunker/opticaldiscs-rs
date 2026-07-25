@@ -257,10 +257,14 @@ impl SectorReader for BinCueSectorReader {
 ///
 /// Create one via [`ChdSectorReader::open`] by passing the path to the `.chd`
 /// file and the data track obtained from [`crate::chd::open_chd`].
+///
+/// Requires the `chd` feature (on by default); see [`crate::chd::is_supported`].
+#[cfg(feature = "chd")]
 pub struct ChdSectorReader {
     inner: libchdman_rs::cd::CdCookedReader,
 }
 
+#[cfg(feature = "chd")]
 impl ChdSectorReader {
     /// Open a CHD file and prepare to read sectors from `track`.
     ///
@@ -287,15 +291,30 @@ impl ChdSectorReader {
             ))
         })?;
 
-        let inner =
-            libchdman_rs::cd::CdCookedReader::open_track(chd, track_index).map_err(|e| {
-                OpticaldiscsError::Chd(format!("open CHD track {}: {e:?}", track.track_no))
-            })?;
+        // `NotCdMedia` means the CHD is a hard-disk/DVD/A/V image rather than an
+        // optical one — an unsupported format, not a malfunction. Reachable when
+        // this reader is constructed directly; `crate::chd::open_chd` screens the
+        // same case earlier from the info record. Requires libchdman-rs >= 0.288.10:
+        // before that, this call aborted the process instead of returning.
+        let inner = libchdman_rs::cd::CdCookedReader::open_track(chd, track_index).map_err(
+            |e| match e {
+                libchdman_rs::ChdError::NotCdMedia => {
+                    OpticaldiscsError::UnsupportedFormat(format!(
+                        "{} is a CHD without CD/GD-ROM geometry, not a disc image",
+                        path.display()
+                    ))
+                }
+                other => {
+                    OpticaldiscsError::Chd(format!("open CHD track {}: {other:?}", track.track_no))
+                }
+            },
+        )?;
 
         Ok(Self { inner })
     }
 }
 
+#[cfg(feature = "chd")]
 impl SectorReader for ChdSectorReader {
     /// Read a 2048-byte cooked sector at `lba` (track-relative).
     fn read_sector(&mut self, lba: u64) -> Result<Vec<u8>> {
@@ -307,6 +326,135 @@ impl SectorReader for ChdSectorReader {
             .read_exact(&mut buf)
             .map_err(OpticaldiscsError::Io)?;
         Ok(buf)
+    }
+}
+
+// ── DVD CHD reader ───────────────────────────────────────────────────────────
+
+/// `SectorReader` for **DVD** CHD images.
+///
+/// A DVD CHD needs none of the CD machinery. Where a CD image stores 2352- or
+/// 2448-byte frames split into tracks — requiring MAME's `cdrom_file` to cook
+/// them and a per-track reader to address them — a DVD CHD is already one flat
+/// run of 2048-byte sectors, which is exactly the shape [`SectorReader`] is
+/// defined in terms of. So this reads straight through
+/// [`libchdman_rs::Chd::read_bytes`] with no cooking and no track translation,
+/// and [`read_bytes`](Self::read_bytes) overrides the trait default with a direct
+/// call rather than composing per-sector reads.
+///
+/// Construct with [`DvdChdSectorReader::open`]; use [`crate::chd::chd_media`] to
+/// establish that a CHD is DVD media in the first place. CD and GD-ROM CHDs go
+/// through [`ChdSectorReader`] instead.
+///
+/// Requires the `chd` feature (on by default).
+#[cfg(feature = "chd")]
+pub struct DvdChdSectorReader {
+    chd: libchdman_rs::Chd,
+    /// Logical size of the image in bytes; reads past this are refused.
+    logical_bytes: u64,
+}
+
+// SAFETY: the only non-`Send` field is `Chd`'s `*mut ChdFile`, a MAME `chd_file`
+// this reader exclusively owns (`Chd::open` created it, `Drop` frees it) and
+// hands to no one else. Nothing in the handle is thread-affine — no TLS, no
+// thread-bound locks — so moving it to another thread is sound. This mirrors
+// libchdman-rs's own `unsafe impl Send for CdCookedReader`, which makes the same
+// assertion about the same handle type. Note `Send`, not `Sync`: `read_bytes`
+// takes `&self` upstream, so *concurrent* reads through one handle are not
+// claimed to be safe, and `SectorReader` never needs them (`read_sector` takes
+// `&mut self`).
+#[cfg(feature = "chd")]
+unsafe impl Send for DvdChdSectorReader {}
+
+#[cfg(feature = "chd")]
+impl DvdChdSectorReader {
+    /// Open a DVD CHD for reading.
+    ///
+    /// # Errors
+    ///
+    /// - [`OpticaldiscsError::Io`] if the path is missing or unreadable.
+    /// - [`OpticaldiscsError::UnsupportedFormat`] if the CHD is not DVD media —
+    ///   a CD or GD-ROM CHD (use [`ChdSectorReader`]), or a hard-disk/A/V image.
+    /// - [`OpticaldiscsError::Chd`] if the CHD header cannot be parsed.
+    pub fn open(path: impl AsRef<Path>) -> Result<Self> {
+        let path = path.as_ref();
+
+        // Surface missing/unreadable files as Io rather than Chd.
+        std::fs::metadata(path).map_err(OpticaldiscsError::Io)?;
+
+        let path_str = path.to_str().ok_or_else(|| {
+            OpticaldiscsError::Chd(format!("non-UTF-8 CHD path: {}", path.display()))
+        })?;
+
+        let chd = libchdman_rs::Chd::open(path_str, false, None)
+            .map_err(|e| OpticaldiscsError::Chd(format!("failed to open CHD: {e:?}")))?;
+
+        let info = chd
+            .info()
+            .map_err(|e| OpticaldiscsError::Chd(format!("CHD info: {e:?}")))?;
+
+        // Refuse non-DVD media rather than silently misreading it: a CD CHD's
+        // frames are 2448 bytes, so treating them as flat 2048-byte sectors would
+        // return plausible-looking garbage instead of an error.
+        if !info.is_dvd {
+            let media = crate::chd::chd_media(path)?;
+            return Err(OpticaldiscsError::UnsupportedFormat(format!(
+                "{} is a {} CHD, not a DVD image{}",
+                path.display(),
+                media.display_name(),
+                if media.has_tracks() {
+                    " — read it with ChdSectorReader"
+                } else {
+                    ""
+                },
+            )));
+        }
+
+        Ok(Self {
+            chd,
+            logical_bytes: info.logical_bytes,
+        })
+    }
+
+    /// Logical size of the DVD image in bytes.
+    pub fn logical_bytes(&self) -> u64 {
+        self.logical_bytes
+    }
+
+    /// Read `len` bytes at `offset`, refusing anything past the logical end.
+    ///
+    /// MAME reports an out-of-range hunk generically; bounding here names the
+    /// actual problem and keeps behaviour consistent with the file-backed readers,
+    /// whose `read_exact` fails at EOF.
+    fn read_checked(&self, offset: u64, len: usize) -> Result<Vec<u8>> {
+        let end = offset
+            .checked_add(len as u64)
+            .ok_or_else(|| OpticaldiscsError::Chd(format!("DVD CHD read at {offset} overflows")))?;
+        if end > self.logical_bytes {
+            return Err(OpticaldiscsError::Chd(format!(
+                "DVD CHD read past end of image: {end} > {}",
+                self.logical_bytes
+            )));
+        }
+        let mut buf = vec![0u8; len];
+        self.chd
+            .read_bytes(offset, &mut buf)
+            .map_err(|e| OpticaldiscsError::Chd(format!("DVD CHD read at {offset}: {e:?}")))?;
+        Ok(buf)
+    }
+}
+
+#[cfg(feature = "chd")]
+impl SectorReader for DvdChdSectorReader {
+    /// Read a 2048-byte sector at `lba`. DVD sectors are already cooked.
+    fn read_sector(&mut self, lba: u64) -> Result<Vec<u8>> {
+        self.read_checked(lba * SECTOR_SIZE, SECTOR_SIZE as usize)
+    }
+
+    /// Direct read — a DVD CHD's address space is flat, so there is no
+    /// per-sector gap to skip and no reason to compose sector reads.
+    fn read_bytes(&mut self, byte_offset: u64, length: usize) -> Result<Vec<u8>> {
+        self.read_checked(byte_offset, length)
     }
 }
 

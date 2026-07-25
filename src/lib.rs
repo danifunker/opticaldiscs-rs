@@ -7,7 +7,7 @@
 //!
 //! - **ISO** (`.iso`, `.toast`) — plain 2048-byte cooked sectors
 //! - **BIN/CUE** — raw 2352-byte sectors with per-track header stripping
-//! - **CHD** — MAME Compressed Hunks of Data, optical variant
+//! - **CHD** — MAME Compressed Hunks of Data, optical variant (feature `chd`)
 //!
 //! On top of `SectorReader`, filesystem browsers are provided for:
 //! - ISO 9660 (data CDs and DVDs)
@@ -17,10 +17,17 @@
 //!
 //! # Feature Flags
 //!
+//! - `chd` — **on by default.** CHD reading via `libchdman-rs` (MAME's C++ CHD
+//!   core). Turn it off with `default-features = false` on targets that can't
+//!   build or fetch it. `.chd` files are still *recognised* without it; opening
+//!   one returns [`OpticaldiscsError::UnsupportedFormat`]. Query the build at
+//!   runtime with [`chd::is_supported()`] or [`DiscFormat::is_supported`].
 //! - `toc` — enables `DiscTOC`, `TrackInfo`, MusicBrainz DiscID, and FreeDB ID
 //!   calculation (requires `sha1` and `base64`).
 //! - `drives` — enables `list_drives()` for enumerating physical optical drives
 //!   on Linux, macOS, and Windows.
+//! - `mdx` — DAEMON Tools `.mdx` reading (off by default; pulls a crypto stack).
+//!   Gated the same way as `chd`, including [`DiscFormat::is_supported`].
 //!
 //! # Quick Example
 //!
@@ -118,7 +125,7 @@ pub use browse::entry::{
 };
 pub use browse::filesystem::{Filesystem, FilesystemError};
 pub use error::OpticaldiscsError;
-pub use formats::{supported_extensions, DiscFormat, FilesystemType};
+pub use formats::{enabled_extensions, supported_extensions, DiscFormat, FilesystemType};
 
 // ISO 9660 metadata types
 pub use iso9660::{Iso9660DateTime, JolietVolumeDescriptor, PrimaryVolumeDescriptor, PvdDateTime};
@@ -135,8 +142,13 @@ pub use sector_reader::SectorReader;
 // Phase 3
 pub use sector_reader::BinCueSectorReader;
 
-// Phase 4
-pub use sector_reader::ChdSectorReader;
+// Phase 4 (feature "chd", on by default)
+#[cfg(feature = "chd")]
+pub use sector_reader::{ChdSectorReader, DvdChdSectorReader};
+
+// CHD media classification — CHD is a container, so the media kind picks the
+// reader. Always compiled; `chd_media` itself needs the `chd` feature.
+pub use chd::ChdMedia;
 
 // Dreamcast GD-ROM high-density reader (see gdi module for the .gdi container).
 pub use sector_reader::{GdromSectorReader, GDROM_HD_START_LBA};

@@ -42,10 +42,50 @@ pub enum DiscFormat {
 }
 
 impl DiscFormat {
+    /// Every container format this crate knows about, in declaration order.
+    ///
+    /// Includes formats that the current build cannot open — pair with
+    /// [`is_supported`](Self::is_supported) to get only the usable ones:
+    ///
+    /// ```
+    /// use opticaldiscs::DiscFormat;
+    ///
+    /// let usable: Vec<_> = DiscFormat::ALL
+    ///     .iter()
+    ///     .copied()
+    ///     .filter(|f| f.is_supported())
+    ///     .collect();
+    /// assert!(usable.contains(&DiscFormat::Iso));
+    /// ```
+    pub const ALL: &'static [DiscFormat] = &[
+        Self::Iso,
+        Self::BinCue,
+        Self::Chd,
+        Self::MdsMdf,
+        Self::Gdi,
+        Self::Nintendo,
+        Self::Cso,
+        Self::Gz,
+        Self::CloneCd,
+        Self::Nrg,
+        Self::DiscJuggler,
+        Self::Mdx,
+    ];
+
     /// Detect format from file extension (case-insensitive).
     pub fn from_path(path: impl AsRef<Path>) -> Option<Self> {
         let ext = path.as_ref().extension()?.to_str()?.to_lowercase();
-        match ext.as_str() {
+        Self::from_extension(&ext)
+    }
+
+    /// Map a lowercase extension (no leading dot) to its format.
+    ///
+    /// Only *entry-point* extensions map to a format: a CloneCD image is opened
+    /// through its `.ccd` descriptor, so the `img`/`sub` sidecars listed by
+    /// [`extensions`](Self::extensions) resolve to `None` here — they are not
+    /// files a caller opens directly.
+    fn from_extension(ext: &str) -> Option<Self> {
+        match ext {
             "iso" | "toast" => Some(Self::Iso),
             "bin" | "cue" => Some(Self::BinCue),
             "chd" => Some(Self::Chd),
@@ -80,6 +120,45 @@ impl DiscFormat {
         }
     }
 
+    /// Whether *this build* can actually open images of this format.
+    ///
+    /// Every format is recognised by [`from_path`](Self::from_path) and by magic
+    /// bytes regardless of how the crate was compiled — recognition is what lets
+    /// a caller report "this is a CHD, but CHD support wasn't built in" instead
+    /// of "unknown file". This method reports whether the read path exists:
+    ///
+    /// - [`Chd`](Self::Chd) requires the `chd` feature (on by default).
+    /// - [`Mdx`](Self::Mdx) requires the `mdx` feature (off by default).
+    /// - Every other format is unconditional.
+    ///
+    /// Opening an unsupported format returns
+    /// [`OpticaldiscsError::UnsupportedFormat`](crate::OpticaldiscsError::UnsupportedFormat);
+    /// use this to filter a file-open dialog or hide a UI affordance up front
+    /// rather than surfacing the error later.
+    ///
+    /// ```
+    /// use opticaldiscs::DiscFormat;
+    ///
+    /// assert!(DiscFormat::Iso.is_supported());
+    /// assert_eq!(DiscFormat::Chd.is_supported(), cfg!(feature = "chd"));
+    /// ```
+    pub const fn is_supported(self) -> bool {
+        match self {
+            Self::Chd => cfg!(feature = "chd"),
+            Self::Mdx => cfg!(feature = "mdx"),
+            Self::Iso
+            | Self::BinCue
+            | Self::MdsMdf
+            | Self::Gdi
+            | Self::Nintendo
+            | Self::Cso
+            | Self::Gz
+            | Self::CloneCd
+            | Self::Nrg
+            | Self::DiscJuggler => true,
+        }
+    }
+
     /// File extensions associated with this format.
     pub fn extensions(self) -> &'static [&'static str] {
         match self {
@@ -100,11 +179,36 @@ impl DiscFormat {
 }
 
 /// All file extensions recognised by the library, for use in file-open dialogs.
+///
+/// This is the full set the crate can *identify*, independent of feature flags —
+/// it does not shrink when a format's read path is compiled out. For only the
+/// extensions this build can actually open, use [`enabled_extensions`].
 pub fn supported_extensions() -> &'static [&'static str] {
     &[
         "iso", "toast", "bin", "cue", "chd", "mds", "mdf", "gdi", "gcm", "rvz", "wbfs", "ciso",
         "gcz", "wia", "tgc", "nfs", "cso", "gz", "ccd", "nrg", "cdi", "mdx",
     ]
+}
+
+/// File extensions this build can actually open, for use in file-open dialogs.
+///
+/// [`supported_extensions`] lists everything the crate can *identify*;
+/// this is that set minus the formats whose feature is off (see
+/// [`DiscFormat::is_supported`]). With default features that means `.mdx` is
+/// absent; in a build without `chd`, `.chd` is absent too.
+///
+/// Returns an owned `Vec` because the result depends on the enabled feature
+/// combination; `supported_extensions` stays a `&'static [_]`.
+///
+/// Derived by filtering [`supported_extensions`], so it is always a subset of it
+/// and keeps the same "extensions a caller can open directly" semantics — the
+/// `img`/`sub` CloneCD sidecars are excluded from both.
+pub fn enabled_extensions() -> Vec<&'static str> {
+    supported_extensions()
+        .iter()
+        .copied()
+        .filter(|ext| DiscFormat::from_extension(ext).is_some_and(|f| f.is_supported()))
+        .collect()
 }
 
 /// Filesystem type found on the data track of a disc.
@@ -200,5 +304,62 @@ mod tests {
         assert_eq!(DiscFormat::from_path("game.cue"), Some(DiscFormat::BinCue));
         assert_eq!(DiscFormat::from_path("game.chd"), Some(DiscFormat::Chd));
         assert_eq!(DiscFormat::from_path("game.txt"), None);
+    }
+
+    /// Extension recognition must be feature-independent: a `.chd` is a CHD even
+    /// in a build that can't open one.
+    #[test]
+    fn recognition_is_independent_of_features() {
+        assert_eq!(DiscFormat::from_path("game.chd"), Some(DiscFormat::Chd));
+        assert_eq!(DiscFormat::from_path("game.mdx"), Some(DiscFormat::Mdx));
+        assert!(supported_extensions().contains(&"chd"));
+        assert!(supported_extensions().contains(&"mdx"));
+    }
+
+    #[test]
+    fn is_supported_reflects_features() {
+        assert_eq!(DiscFormat::Chd.is_supported(), cfg!(feature = "chd"));
+        assert_eq!(DiscFormat::Mdx.is_supported(), cfg!(feature = "mdx"));
+
+        // Every other format is unconditional.
+        for f in DiscFormat::ALL {
+            if !matches!(f, DiscFormat::Chd | DiscFormat::Mdx) {
+                assert!(
+                    f.is_supported(),
+                    "{f:?} should be unconditionally supported"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn all_covers_every_extension() {
+        // `ALL` must stay exhaustive, or `enabled_extensions` silently drops
+        // formats. Cross-check it against the static extension list.
+        for ext in supported_extensions() {
+            let fmt = DiscFormat::from_path(format!("x.{ext}"))
+                .unwrap_or_else(|| panic!("`{ext}` maps to no DiscFormat"));
+            assert!(
+                DiscFormat::ALL.contains(&fmt),
+                "{fmt:?} (from `{ext}`) missing from DiscFormat::ALL"
+            );
+        }
+    }
+
+    #[test]
+    fn enabled_extensions_filters_by_feature() {
+        let enabled = enabled_extensions();
+
+        assert!(enabled.contains(&"iso"));
+        assert_eq!(enabled.contains(&"chd"), cfg!(feature = "chd"));
+        assert_eq!(enabled.contains(&"mdx"), cfg!(feature = "mdx"));
+
+        // Never wider than the recognised set.
+        for ext in &enabled {
+            assert!(
+                supported_extensions().contains(ext),
+                "`{ext}` enabled but not in supported_extensions()"
+            );
+        }
     }
 }
