@@ -35,17 +35,110 @@ use libchdman_rs::Chd;
 #[cfg(feature = "chd")]
 use crate::error::{OpticaldiscsError, Result};
 
-/// Name the media kind a CHD's info record declares, for error messages.
+// ── ChdMedia ──────────────────────────────────────────────────────────────────
+
+/// The kind of media a CHD container holds.
+///
+/// CHD is a *container*, not a disc format: the same `MComprHD` magic fronts CD,
+/// GD-ROM, DVD, hard-disk and A/V images, so recognising a file as a CHD says
+/// nothing about how to read it. Establish this first — see `chd_media` — and
+/// pick the reader from it:
+///
+/// | Media | Reader |
+/// |---|---|
+/// | [`Cd`](Self::Cd), [`GdRom`](Self::GdRom) | `open_chd` for tracks, then `ChdSectorReader` per track |
+/// | [`Dvd`](Self::Dvd) | `DvdChdSectorReader` — one flat run of 2048-byte sectors, no tracks |
+/// | [`HardDisk`](Self::HardDisk), [`Av`](Self::Av) | none; not optical media |
+///
+/// (`chd_media` and the readers are gated behind the `chd` feature, so they are
+/// named in plain backticks — a doc link would dangle in a build without it.)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChdMedia {
+    /// CD-ROM: CD track metadata (`CHT2`/`CHTR`), 2448-byte frames.
+    Cd,
+    /// Dreamcast GD-ROM: `CHGD` track metadata, high-density area at frame 45000.
+    GdRom,
+    /// DVD: a flat run of 2048-byte sectors with no track metadata.
+    Dvd,
+    /// Hard-disk image (`GDDD` geometry) — not an optical disc.
+    HardDisk,
+    /// MAME A/V (laserdisc) capture — not a data disc.
+    Av,
+    /// None of the above, or the info record declares nothing recognisable.
+    Unknown,
+}
+
+impl ChdMedia {
+    /// Whether this crate can read the media as an optical disc image.
+    pub const fn is_optical(self) -> bool {
+        matches!(self, Self::Cd | Self::GdRom | Self::Dvd)
+    }
+
+    /// Whether the media carries CD-style track metadata — i.e. whether
+    /// `open_chd` applies. False for [`Dvd`](Self::Dvd), which has no tracks.
+    pub const fn has_tracks(self) -> bool {
+        matches!(self, Self::Cd | Self::GdRom)
+    }
+
+    /// Human-readable name, for error messages and UI.
+    pub const fn display_name(self) -> &'static str {
+        match self {
+            Self::Cd => "CD-ROM",
+            Self::GdRom => "GD-ROM",
+            Self::Dvd => "DVD",
+            Self::HardDisk => "hard-disk",
+            Self::Av => "A/V",
+            Self::Unknown => "unrecognised",
+        }
+    }
+}
+
+/// Classify a CHD's media from its info record.
+///
+/// Cheap: reads the CHD header and metadata tags only — no track parsing, and no
+/// `cdrom_file` construction (which is what aborted the process before
+/// libchdman-rs 0.288.10 on non-CD media).
+///
+/// Requires the `chd` feature (on by default).
+///
+/// # Errors
+///
+/// [`OpticaldiscsError::Io`] if the path is missing or unreadable;
+/// [`OpticaldiscsError::Chd`] if the CHD header cannot be parsed.
 #[cfg(feature = "chd")]
-fn describe_media(info: &libchdman_rs::ChdInfo) -> &'static str {
-    if info.is_hd {
-        "hard-disk"
+pub fn chd_media(path: impl AsRef<Path>) -> Result<ChdMedia> {
+    let path = path.as_ref();
+    std::fs::metadata(path).map_err(OpticaldiscsError::Io)?;
+    let path_str = path
+        .to_str()
+        .ok_or_else(|| OpticaldiscsError::Chd(format!("non-UTF-8 path: {}", path.display())))?;
+    let chd = Chd::open(path_str, false, None)
+        .map_err(|e| OpticaldiscsError::Chd(format!("failed to open CHD: {e:?}")))?;
+    let info = chd
+        .info()
+        .map_err(|e| OpticaldiscsError::Chd(format!("CHD info: {e:?}")))?;
+    Ok(classify(&info))
+}
+
+/// Map an info record's media flags onto [`ChdMedia`].
+///
+/// Checked most-specific first: GD-ROM before CD (a GD-ROM also answers to the
+/// CD track-metadata check), and DVD before hard-disk so a DVD is never
+/// mistaken for one.
+#[cfg(feature = "chd")]
+fn classify(info: &libchdman_rs::ChdInfo) -> ChdMedia {
+    if info.is_gd {
+        ChdMedia::GdRom
+    } else if info.is_cd {
+        ChdMedia::Cd
     } else if info.is_dvd {
-        "DVD"
+        ChdMedia::Dvd
     } else if info.is_av {
-        "A/V"
+        ChdMedia::Av
+    } else if info.is_hd {
+        ChdMedia::HardDisk
     } else {
-        "non-CD"
+        ChdMedia::Unknown
     }
 }
 
@@ -306,16 +399,25 @@ pub fn open_chd(path: impl AsRef<Path>) -> Result<ChdInfo> {
         .info()
         .map_err(|e| OpticaldiscsError::Chd(format!("CHD info: {e:?}")))?;
 
-    // A CHD is a generic container: hard-disk, DVD and A/V images share the
-    // `MComprHD` magic that `detect_format` keys on, so a non-optical CHD reaches
-    // this function routinely. Screen it out from the info record, which is
-    // already in hand — no `cdrom_file` construction, and the message names the
-    // actual media kind instead of a generic parse failure.
-    if !(info.is_cd || info.is_gd) {
+    // A CHD is a generic container: DVD, hard-disk and A/V images share the
+    // `MComprHD` magic that `detect_format` keys on, so a CHD with no tracks
+    // reaches this function routinely. Screen it out from the info record, which
+    // is already in hand — no `cdrom_file` construction, and the message names
+    // the actual media kind instead of a generic parse failure.
+    //
+    // A DVD CHD is refused here even though it *is* readable: it has no track
+    // metadata, so it belongs to `DvdChdSectorReader` rather than this function.
+    let media = classify(&info);
+    if !media.has_tracks() {
         return Err(OpticaldiscsError::UnsupportedFormat(format!(
-            "{} is a {} CHD, not a CD/GD-ROM disc image",
+            "{} is a {} CHD, which carries no CD/GD-ROM track metadata{}",
             path.display(),
-            describe_media(&info),
+            media.display_name(),
+            if media == ChdMedia::Dvd {
+                " — read it with DvdChdSectorReader"
+            } else {
+                ""
+            },
         )));
     }
 
@@ -426,6 +528,165 @@ mod tests {
     fn open_chd_nonexistent_returns_io_error() {
         let err = open_chd("nonexistent_file_that_does_not_exist.chd").unwrap_err();
         assert!(matches!(err, OpticaldiscsError::Io(_)));
+    }
+
+    /// Build a DVD CHD fixture whose payload is `iso`, returning the temp dir
+    /// (which must outlive the returned path) and the `.chd` path.
+    #[cfg(feature = "chd")]
+    fn dvd_chd_fixture(iso: &[u8]) -> (tempfile::TempDir, std::path::PathBuf) {
+        use std::io::Write;
+
+        let dir = tempfile::tempdir().unwrap();
+        let iso_path = dir.path().join("disc.iso");
+        let mut f = std::fs::File::create(&iso_path).unwrap();
+        f.write_all(iso).unwrap();
+        f.flush().unwrap();
+        drop(f);
+
+        let chd_path = dir.path().join("disc.chd");
+        libchdman_rs::dvd::create_from_iso(
+            &iso_path,
+            &chd_path,
+            libchdman_rs::dvd::DvdCreateOptions::default(),
+            &mut |_| {},
+            &|| false,
+        )
+        .expect("could not build the DVD CHD fixture");
+
+        (dir, chd_path)
+    }
+
+    /// A minimal but *browsable* ISO 9660 image: PVD at sector 16, and a root
+    /// directory at sector 18 holding the mandatory `.` and `..` records.
+    ///
+    /// The root directory matters: without it the volume probes as ISO 9660 but
+    /// cannot be opened, which would leave the browse path untested.
+    #[cfg(feature = "chd")]
+    fn minimal_iso(label: &str) -> Vec<u8> {
+        use crate::iso9660::{build_test_pvd_sector, PVD_SECTOR};
+        use crate::sector_reader::SECTOR_SIZE;
+
+        let sector = SECTOR_SIZE as usize;
+        // 32 sectors keeps the image a whole number of 4 KiB DVD hunks.
+        let mut img = vec![0u8; 32 * sector];
+
+        let pvd = build_test_pvd_sector(label, 18, SECTOR_SIZE as u32);
+        let off = PVD_SECTOR as usize * sector;
+        img[off..off + pvd.len()].copy_from_slice(&pvd);
+
+        // Volume Descriptor Set Terminator at sector 17.
+        img[17 * sector] = 0xFF;
+        img[17 * sector + 1..17 * sector + 6].copy_from_slice(b"CD001");
+        img[17 * sector + 6] = 1;
+
+        // Root directory at sector 18: `.` and `..`, both pointing at itself.
+        let mut dir_off = 18 * sector;
+        for id in [b"\x00".as_slice(), b"\x01".as_slice()] {
+            let rec_len = (33 + id.len()).next_multiple_of(2);
+            img[dir_off] = rec_len as u8;
+            img[dir_off + 2..dir_off + 6].copy_from_slice(&18u32.to_le_bytes());
+            img[dir_off + 6..dir_off + 10].copy_from_slice(&18u32.to_be_bytes());
+            img[dir_off + 10..dir_off + 14].copy_from_slice(&(sector as u32).to_le_bytes());
+            img[dir_off + 14..dir_off + 18].copy_from_slice(&(sector as u32).to_be_bytes());
+            img[dir_off + 25] = 0x02; // directory
+            img[dir_off + 32] = id.len() as u8;
+            img[dir_off + 33..dir_off + 33 + id.len()].copy_from_slice(id);
+            dir_off += rec_len;
+        }
+
+        img
+    }
+
+    /// A DVD CHD is readable end-to-end: classified, browsed, and byte-exact.
+    ///
+    /// DVD CHDs need none of the CD machinery — no `cdrom_file`, no tracks — so
+    /// this covers the whole path: media classification, the flat sector reader,
+    /// and `DiscImageInfo::open` detecting the ISO 9660 volume inside.
+    #[cfg(feature = "chd")]
+    #[test]
+    fn dvd_chd_is_classified_read_and_probed() {
+        use crate::sector_reader::{DvdChdSectorReader, SectorReader, SECTOR_SIZE};
+
+        let iso = minimal_iso("DVD_CHD_TEST");
+        let (_dir, chd_path) = dvd_chd_fixture(&iso);
+
+        // Classified as DVD: optical, but with no tracks.
+        let media = chd_media(&chd_path).unwrap();
+        assert_eq!(media, ChdMedia::Dvd);
+        assert!(media.is_optical());
+        assert!(!media.has_tracks());
+
+        // `open_chd` is the track-metadata entry point, so it declines a DVD and
+        // points at the right reader.
+        match open_chd(&chd_path) {
+            Err(OpticaldiscsError::UnsupportedFormat(msg)) => {
+                assert!(msg.contains("DVD"), "got: {msg}");
+                assert!(msg.contains("DvdChdSectorReader"), "got: {msg}");
+            }
+            other => panic!("expected UnsupportedFormat, got {other:?}"),
+        }
+
+        // Sectors come back byte-exact against the source ISO.
+        let mut reader = DvdChdSectorReader::open(&chd_path).unwrap();
+        assert_eq!(reader.logical_bytes(), iso.len() as u64);
+        let pvd_sector = reader.read_sector(16).unwrap();
+        let want = &iso[16 * SECTOR_SIZE as usize..17 * SECTOR_SIZE as usize];
+        assert_eq!(pvd_sector, want, "sector 16 should match the source ISO");
+
+        // The `read_bytes` override addresses the same flat space.
+        let spanning = reader.read_bytes(16 * SECTOR_SIZE + 8, 16).unwrap();
+        assert_eq!(&spanning[..], &want[8..24]);
+
+        // Reads past the logical end are refused, not silently short.
+        assert!(reader.read_sector(1_000_000).is_err());
+        assert!(reader.read_bytes(reader.logical_bytes() - 4, 8).is_err());
+
+        // End to end: the front door detects the filesystem inside the DVD CHD.
+        let info = crate::detect::DiscImageInfo::open(&chd_path).unwrap();
+        assert_eq!(info.format, crate::DiscFormat::Chd);
+        assert_eq!(info.filesystem, crate::FilesystemType::Iso9660);
+        assert_eq!(info.volume_label.as_deref(), Some("DVD_CHD_TEST"));
+
+        // ...and the browse path takes the DVD branch and yields a filesystem.
+        let mut fs = crate::browse::open_disc_filesystem(&info).unwrap();
+        let root = fs.root().unwrap();
+        fs.list_directory(&root)
+            .expect("root of a DVD CHD should be listable");
+    }
+
+    /// A CD CHD must not be misread as a flat DVD image.
+    #[cfg(feature = "chd")]
+    #[test]
+    fn dvd_reader_refuses_non_dvd_media() {
+        use std::io::Write;
+
+        let dir = tempfile::tempdir().unwrap();
+        let raw = dir.path().join("disk.img");
+        let mut f = std::fs::File::create(&raw).unwrap();
+        f.write_all(&vec![0u8; 64 * 1024]).unwrap();
+        f.flush().unwrap();
+        drop(f);
+
+        let chd_path = dir.path().join("disk.chd");
+        libchdman_rs::hd::create_from_path(
+            &raw,
+            &chd_path,
+            libchdman_rs::hd::HdCreateOptions::default(),
+            &mut |_| {},
+            &|| false,
+        )
+        .unwrap();
+
+        // Readers aren't `Debug` (they own an FFI handle), so match on the error
+        // rather than formatting the whole `Result`.
+        match crate::sector_reader::DvdChdSectorReader::open(&chd_path) {
+            Err(OpticaldiscsError::UnsupportedFormat(msg)) => {
+                assert!(msg.contains("not a DVD image"), "got: {msg}");
+                assert!(msg.contains("hard-disk"), "got: {msg}");
+            }
+            Err(other) => panic!("expected UnsupportedFormat, got {other:?}"),
+            Ok(_) => panic!("a hard-disk CHD must not open as a DVD image"),
+        }
     }
 
     /// A hard-disk CHD must come back as an error, not take the process with it.

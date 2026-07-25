@@ -248,6 +248,15 @@ fn open_sector_reader(info: &DiscImageInfo) -> Result<Box<dyn SectorReader>, Fil
 
         #[cfg(feature = "chd")]
         DiscFormat::Chd => {
+            // A DVD CHD is one flat run of 2048-byte sectors with no track
+            // metadata, so it bypasses the CD path entirely (see
+            // DvdChdSectorReader).
+            if crate::chd::chd_media(path).map_err(disc_err)? == crate::chd::ChdMedia::Dvd {
+                let reader =
+                    crate::sector_reader::DvdChdSectorReader::open(path).map_err(disc_err)?;
+                return Ok(Box::new(reader));
+            }
+
             let chd_info = crate::chd::open_chd(path).map_err(disc_err)?;
             // Dreamcast GD-ROM: the high-density area can span several data tracks
             // (separated by audio tracks), so wrap every HD data track and let the

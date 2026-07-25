@@ -28,8 +28,23 @@ to link MAME's C++ code.
 **libchdman-rs 0.288.10 is a hard floor** (since opticaldiscs 0.14.0). Earlier
 versions abort the process when handed a CHD without CD track metadata — a
 hard-disk, DVD, or A/V image — and since `.chd` detection keys on magic bytes
-common to every CHD, that was reachable from `DiscImageInfo::open`. Such images
-now report `UnsupportedFormat` naming the actual media kind.
+common to every CHD, that was reachable from `DiscImageInfo::open`.
+
+### CHD is a container, not a disc format
+
+The same `MComprHD` magic fronts CD, GD-ROM, DVD, hard-disk and A/V images, so
+identifying a file as a CHD says nothing about how to read it. `chd::chd_media()`
+classifies it from the info record (cheap — no track parsing), and the media kind
+picks the reader:
+
+| `ChdMedia` | Reader | Notes |
+|---|---|---|
+| `Cd`, `GdRom` | `ChdSectorReader` | `open_chd()` for track metadata first; GD-ROM HD area spans several tracks |
+| `Dvd` | `DvdChdSectorReader` | One flat run of 2048-byte sectors — no tracks, no cooking |
+| `HardDisk`, `Av` | — | Not optical media; reported as `UnsupportedFormat` |
+
+`DiscImageInfo::open` and `browse::open_disc_filesystem` do this dispatch
+internally, so callers just pass a `.chd` path and get the right reader.
 
 This lives behind the **`chd` feature, on by default**. Because linking MAME's
 C++ core isn't possible everywhere, it can be dropped entirely with
@@ -60,7 +75,8 @@ for the full list of supported targets, glibc floors, and escape hatches.
 |---|---|
 | ISO sector reader | ✓ |
 | BIN/CUE sector reader (raw 2352-byte) | ✓ |
-| CHD sector reader (via libchdman-rs) | ✓ (`chd` feature, on by default — optional since 0.14.0) |
+| CHD sector reader — CD / GD-ROM (via libchdman-rs) | ✓ (`chd` feature, on by default — optional since 0.14.0) |
+| CHD sector reader — **DVD** (flat 2048-byte sectors, no tracks) | ✓ (since 0.14.0) |
 | PSP `.cso` (CISOv1) + gzip-compressed (`.gz`) image readers | ✓ (since 0.9.0) |
 | CloneCD (`.ccd` / `.img` / `.sub`) container | ✓ (since 0.9.0) |
 | Nero (`.nrg`) container | ✓ (since 0.9.0) |

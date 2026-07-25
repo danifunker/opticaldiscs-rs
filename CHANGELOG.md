@@ -44,10 +44,47 @@ a real hard-disk CHD fixture and asserts both entry points refuse it. Against an
 older libchdman-rs that test does not fail — it kills the test binary, which is
 the point.
 
-**Known gap, unchanged by this release:** a **DVD** CHD is still rejected. It is
-legitimately readable in principle (a flat run of 2048-byte sectors, and this
-crate browses UDF fine), but there is no reader for it yet. Previously it aborted;
-now it reports `UnsupportedFormat`.
+Hard-disk and A/V CHDs remain unsupported by design — they are not optical
+media. **DVD** CHDs, which used to abort along with them, are now *readable*; see
+below.
+
+### Added — DVD CHD images are now readable
+
+A DVD CHD is a disc image this crate could not open at all: before libchdman-rs
+0.288.10 it aborted the process, and immediately after the bump it merely
+reported `UnsupportedFormat`. It is now browsed like any other container.
+
+DVD CHDs need **none** of the CD machinery. A CD image stores 2352-/2448-byte
+frames split into tracks, which is why it takes MAME's `cdrom_file` to cook them
+and a per-track reader to address them. A DVD CHD is already one flat run of
+2048-byte sectors — exactly the shape `SectorReader` is defined in terms of — so
+reading it is a direct `Chd::read_bytes`, with no cooking and no track
+translation. `DiscImageInfo::open` and `browse::open_disc_filesystem` handle
+`.chd` DVDs with no caller changes.
+
+- **`chd::ChdMedia`** — the media a CHD container holds: `Cd`, `GdRom`, `Dvd`,
+  `HardDisk`, `Av`, `Unknown`, with `is_optical()`, `has_tracks()` and
+  `display_name()`. CHD is a container, not a disc format: one `MComprHD` magic
+  fronts all six, so recognising a file as CHD says nothing about how to read it.
+  Re-exported at the crate root.
+- **`chd::chd_media(path)`** — classify from the CHD info record. Cheap: header
+  and metadata tags only, no track parsing and no `cdrom_file` construction.
+- **`DvdChdSectorReader`** — a `SectorReader` over a DVD CHD. Overrides
+  `read_bytes` with a direct read rather than composing per-sector reads, since
+  the address space is flat. Exposes `logical_bytes()`, bounds-checks against it
+  (a read past the end is an error, never a silent short read), and refuses
+  non-DVD media rather than misreading a CD CHD's 2448-byte frames as flat
+  sectors.
+- **`open_chd` now declines a DVD CHD explicitly**, naming
+  `DvdChdSectorReader` in the message. It parses CD/GD-ROM track metadata, which
+  a DVD has none of, so this is a contract clarification rather than a
+  restriction.
+
+Covered end-to-end by `chd::tests::dvd_chd_is_classified_read_and_probed`: it
+builds a real DVD CHD around a synthetic ISO 9660 volume, then asserts the
+classification, byte-exact sector and `read_bytes` reads against the source ISO,
+the bounds refusals, filesystem detection with the right volume label, and a
+successful root listing through `browse::open_disc_filesystem`.
 
 ### Changed — CHD support is now an (on-by-default) feature
 

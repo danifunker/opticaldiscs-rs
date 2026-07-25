@@ -144,7 +144,11 @@ pub use sector_reader::BinCueSectorReader;
 
 // Phase 4 (feature "chd", on by default)
 #[cfg(feature = "chd")]
-pub use sector_reader::ChdSectorReader;
+pub use sector_reader::{ChdSectorReader, DvdChdSectorReader};
+
+// CHD media classification — CHD is a container, so the media kind picks the
+// reader. Always compiled; `chd_media` itself needs the `chd` feature.
+pub use chd::ChdMedia;
 
 // Dreamcast GD-ROM high-density reader (see gdi module for the .gdi container).
 pub use sector_reader::{GdromSectorReader, GDROM_HD_START_LBA};

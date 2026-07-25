@@ -577,11 +577,32 @@ impl DiscImageInfo {
 
     /// Probe a `.chd` file.
     ///
-    /// Parses CHT2 track metadata, locates the first data track, and probes
-    /// the filesystem through a [`ChdSectorReader`].  Audio-only discs (no
-    /// data track) are returned with `FilesystemType::Unknown`.
+    /// CHD is a container, so the media kind decides the reader (see
+    /// [`crate::chd::chd_media`]):
+    ///
+    /// - **DVD** — a flat run of 2048-byte sectors, read through a
+    ///   [`DvdChdSectorReader`]; no tracks, so no TOC.
+    /// - **CD / GD-ROM** — CHT2 track metadata is parsed, the first data track
+    ///   located, and the filesystem probed through a [`ChdSectorReader`].
+    ///   Audio-only discs (no data track) return `FilesystemType::Unknown`.
+    /// - **hard-disk / A/V** — not optical media; rejected as
+    ///   [`OpticaldiscsError::UnsupportedFormat`].
     #[cfg(feature = "chd")]
     fn probe_chd(path: &Path) -> Result<Self> {
+        // A DVD CHD has no track metadata at all, so it must be diverted before
+        // `open_chd`, which exists to parse exactly that.
+        if crate::chd::chd_media(path)? == crate::chd::ChdMedia::Dvd {
+            let mut reader = crate::sector_reader::DvdChdSectorReader::open(path)?;
+            return Self::build(
+                path,
+                DiscFormat::Chd,
+                &mut reader,
+                // No tracks on a DVD, so no TOC to build.
+                #[cfg(feature = "toc")]
+                None,
+            );
+        }
+
         let chd_info = open_chd(path)?;
 
         #[cfg(feature = "toc")]
