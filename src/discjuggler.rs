@@ -338,12 +338,14 @@ mod tests {
     /// session, each `(track_mode, read_mode, start_address, track_length,
     /// pregap)`. Data is zero-filled to cover the tracks.
     fn build_cdi(sessions: &[Vec<(u32, u32, u32, u32, u32)>]) -> Vec<u8> {
-        // Compute total image length.
-        let mut total_sectors = 0u64;
+        // Compute total image length. `decode_read_mode` yields the main and
+        // subchannel sizes *in bytes*, so this is already a byte count — do not
+        // scale it by a sector size again.
+        let mut total_bytes = 0u64;
         for s in sessions {
             for &(_, rm, _, len, _) in s {
                 let (main, sub) = decode_read_mode(rm).unwrap();
-                total_sectors += (u64::from(main) + u64::from(sub)) * u64::from(len);
+                total_bytes += (u64::from(main) + u64::from(sub)) * u64::from(len);
             }
         }
         // Descriptor.
@@ -366,7 +368,7 @@ mod tests {
         // still cover the sessions we wrote. Append the length word.
         let dlen = (desc.len() + 4) as u32;
 
-        let mut file = vec![0u8; (total_sectors * 2352) as usize];
+        let mut file = vec![0u8; total_bytes as usize];
         // Ensure the file is at least as large as the data region we imply.
         if file.is_empty() {
             file = vec![0u8; 2352];
