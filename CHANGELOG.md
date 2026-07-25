@@ -3,6 +3,71 @@
 All notable changes to this crate are documented here. This project follows
 [Semantic Versioning](https://semver.org/).
 
+## 0.14.0
+
+### Changed — CHD support is now an (on-by-default) feature
+
+`libchdman-rs` is no longer a hard dependency. CHD reading moved behind a new
+**`chd` feature, which is in `default`**, so nothing changes for existing
+consumers — but it can now be turned off:
+
+```toml
+opticaldiscs = { version = "0.14", default-features = false }
+```
+
+With `chd` off, `libchdman-rs` leaves the dependency graph entirely: no MAME C++
+core to link, and no build-time download of a prebuilt static archive. That makes
+the crate usable on targets libchdman-rs can't serve — i486/i586 and PowerPC
+Linux, vintage macOS/Windows toolchains, and fully offline builds — while every
+other container and filesystem keeps working.
+
+**Not a breaking change.** No API was removed, `DiscFormat::Chd` still exists,
+and `default = ["chd"]` means a plain dependency bump behaves exactly as before.
+
+- **`.chd` files are still recognised without the feature.** `detect_format`
+  identifies them by extension and by `MComprHD` magic as always;
+  `supported_extensions()` is unchanged. Only the read path is absent, so
+  `DiscImageInfo::open` returns `UnsupportedFormat("CHD support was not compiled
+  in (rebuild with --features chd)")` and `browse` reports
+  `FilesystemError::Unsupported`. A caller can therefore still name the format
+  precisely instead of falling back to "unknown file" — the same contract the
+  `mdx` feature has always had.
+- **The `chd` module still compiles without the feature.** `ChdTrack`,
+  `ChdTrackType`, `ChdInfo` and their helpers are plain Rust and remain
+  available, so downstream code naming those types builds either way. Only
+  `open_chd` and `ChdSectorReader` — the parts that touch the C++ core — are
+  gated. `OpticaldiscsError::Chd` is unconditional, so error matching is
+  unaffected.
+
+### Added — runtime queries for what this build supports
+
+Feature flags are compile-time, but a UI needs to decide at runtime whether to
+offer CHD at all. Four additions, so consumers don't have to mirror
+`cfg!(feature = ...)` in their own code:
+
+- **`chd::is_supported() -> bool`** — the direct "is CHD enabled in here?"
+  answer. `const fn`, so it also works in const contexts.
+- **`DiscFormat::is_supported(self) -> bool`** — the general form, covering every
+  conditionally-compiled format (`Chd` needs `chd`, `Mdx` needs `mdx`, everything
+  else is unconditional). Use it to grey out an entry up front rather than
+  provoking an error on open.
+- **`DiscFormat::ALL`** — every known format as a `&'static [DiscFormat]`, for
+  enumerating and filtering by `is_supported()`.
+- **`enabled_extensions() -> Vec<&'static str>`** — the file-open-dialog
+  companion to `supported_extensions()`: the extensions *this* build can actually
+  open. Always a subset of `supported_extensions()`, which keeps its full
+  recognised set and its `&'static [_]` return type.
+
+### Internal
+
+- `DiscFormat::from_path` now delegates to a private `from_extension(&str)`,
+  which is also what `enabled_extensions` filters through. Behaviour is
+  unchanged, including that the CloneCD `img`/`sub` sidecars map to no format —
+  a `.ccd` is the entry point.
+- CI gained a `--no-default-features` build/test/clippy leg (plus a
+  `toc,drives`-without-`chd` combination), so feature-gating mistakes that only
+  appear when CHD is compiled out get caught.
+
 ## 0.13.0
 
 ### Added — reading DVD and Blu-ray discs from a physical drive

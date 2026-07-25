@@ -240,6 +240,13 @@ fn open_sector_reader(info: &DiscImageInfo) -> Result<Box<dyn SectorReader>, Fil
             Ok(Box::new(reader))
         }
 
+        // Without the `chd` feature there is no read path for the container; the
+        // format is still recognised (see `detect_format`), so callers that want
+        // to avoid this branch entirely should check `crate::chd::is_supported`.
+        #[cfg(not(feature = "chd"))]
+        DiscFormat::Chd => Err(FilesystemError::Unsupported),
+
+        #[cfg(feature = "chd")]
         DiscFormat::Chd => {
             let chd_info = crate::chd::open_chd(path).map_err(disc_err)?;
             // Dreamcast GD-ROM: the high-density area can span several data tracks

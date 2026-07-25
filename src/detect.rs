@@ -25,6 +25,7 @@ use std::path::{Path, PathBuf};
 
 use crate::apm::find_hfs_partition_offset;
 use crate::bincue::parse_cue_tracks;
+#[cfg(feature = "chd")]
 use crate::chd::open_chd;
 use crate::efs::{EfsSuperblock, EFS_BLOCKSIZE, EFS_MAGIC_NEW, EFS_MAGIC_OLD};
 use crate::error::{OpticaldiscsError, Result};
@@ -32,7 +33,9 @@ use crate::formats::{DiscFormat, FilesystemType};
 use crate::hfs::MasterDirectoryBlock;
 use crate::hfsplus::{extract_volume_name_from_catalog, HfsPlusVolumeHeader};
 use crate::iso9660::PrimaryVolumeDescriptor;
-use crate::sector_reader::{BinCueSectorReader, ChdSectorReader, IsoSectorReader, SectorReader};
+#[cfg(feature = "chd")]
+use crate::sector_reader::ChdSectorReader;
+use crate::sector_reader::{BinCueSectorReader, IsoSectorReader, SectorReader};
 use crate::sgi::{SgiVolumeHeader, SGI_VOLHDR_MAGIC};
 
 /// CHD magic bytes at offset 0.
@@ -577,6 +580,7 @@ impl DiscImageInfo {
     /// Parses CHT2 track metadata, locates the first data track, and probes
     /// the filesystem through a [`ChdSectorReader`].  Audio-only discs (no
     /// data track) are returned with `FilesystemType::Unknown`.
+    #[cfg(feature = "chd")]
     fn probe_chd(path: &Path) -> Result<Self> {
         let chd_info = open_chd(path)?;
 
@@ -631,6 +635,20 @@ impl DiscImageInfo {
             #[cfg(feature = "toc")]
             toc,
         )
+    }
+
+    /// Without the `chd` feature, `.chd` files are recognised but not browsable.
+    ///
+    /// The container is still identified by [`detect_format`] (extension and
+    /// `MComprHD` magic), so callers can report the format precisely; only the
+    /// read path is missing. Check [`crate::chd::is_supported`] up front to
+    /// avoid provoking this error.
+    #[cfg(not(feature = "chd"))]
+    fn probe_chd(path: &Path) -> Result<Self> {
+        Err(OpticaldiscsError::UnsupportedFormat(format!(
+            "CHD support was not compiled in (rebuild with `--features chd`): {}",
+            path.display()
+        )))
     }
 }
 
@@ -700,7 +718,10 @@ fn build_bincue_toc(tracks: &[crate::bincue::BinTrack]) -> Option<crate::toc::Di
 /// Uses each track's `frame_offset` directly (already a raw frame index from
 /// the start of the disc data area).  The lead-out is the last track's offset
 /// plus its frame count.  Returns `None` if the track list is empty.
-#[cfg(feature = "toc")]
+///
+/// Needs `chd` as well as `toc`: `probe_chd` is its only caller, and the track
+/// list it consumes can only be produced by [`crate::chd::open_chd`].
+#[cfg(all(feature = "toc", feature = "chd"))]
 fn build_chd_toc(tracks: &[crate::chd::ChdTrack]) -> Option<crate::toc::DiscTOC> {
     use crate::toc::{DiscTOC, TrackInfo};
 

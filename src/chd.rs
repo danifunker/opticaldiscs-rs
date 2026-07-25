@@ -1,18 +1,62 @@
 //! CHD (Compressed Hunks of Data) optical disc reading.
 //!
-//! Thin wrapper around [`libchdman_rs`] — MAME's `chd_file` core via Rust
+//! Thin wrapper around `libchdman-rs` — MAME's `chd_file` core via Rust
 //! bindings — that exposes the track metadata needed by the rest of this
 //! crate without leaking the upstream types into `opticaldiscs`'s public API.
 //!
-//! Actual sector decompression is handled by
-//! [`crate::sector_reader::ChdSectorReader`].
+//! Actual sector decompression is handled by `ChdSectorReader` in
+//! [`crate::sector_reader`].
+//!
+//! # Feature `chd`
+//!
+//! Reading a CHD requires the `chd` feature (**on by default**), which pulls in
+//! `libchdman-rs`. This module is compiled either way: the descriptive types
+//! ([`ChdTrack`], [`ChdTrackType`], [`ChdInfo`] and their helpers) are plain
+//! Rust and always available, so downstream code that names them keeps
+//! compiling in a lean build. Only `open_chd` — the one function that touches
+//! the C++ core — is feature-gated, along with `ChdSectorReader`.
+//!
+//! Ask at runtime with [`is_supported`] (or
+//! [`DiscFormat::Chd.is_supported()`](crate::DiscFormat::is_supported)) rather
+//! than duplicating `cfg!(feature = "chd")` at every call site.
+//!
+//! (Items gated behind `chd` are referred to in plain backticks above, not as
+//! doc links: in a build without the feature they do not exist, and a link to
+//! them would be an unresolved-link warning for every downstream `cargo doc`.)
 
+#[cfg(feature = "chd")]
 use std::path::Path;
 
+#[cfg(feature = "chd")]
 use libchdman_rs::cd::{list_tracks, TrackType as LibTrackType};
+#[cfg(feature = "chd")]
 use libchdman_rs::Chd;
 
+#[cfg(feature = "chd")]
 use crate::error::{OpticaldiscsError, Result};
+
+/// Whether this build can open CHD images — i.e. whether the `chd` feature is
+/// enabled.
+///
+/// `.chd` files are recognised by [`crate::detect::detect_format`] either way;
+/// this reports whether `open_chd` and `ChdSectorReader` exist and whether
+/// [`DiscImageInfo::open`](crate::detect::DiscImageInfo::open) can get past
+/// identifying the container. Use it to hide or disable CHD affordances instead
+/// of letting the open fail:
+///
+/// ```
+/// if opticaldiscs::chd::is_supported() {
+///     // `.chd` can be opened and browsed in this build.
+/// } else {
+///     // Recognised, but opening returns `UnsupportedFormat`.
+/// }
+/// ```
+///
+/// Equivalent to [`crate::DiscFormat::Chd.is_supported()`](crate::DiscFormat::is_supported),
+/// which is the general form covering every conditional format.
+pub const fn is_supported() -> bool {
+    cfg!(feature = "chd")
+}
 
 /// Byte size of one CHD CD-ROM frame: 2352-byte raw sector + 96-byte subcode.
 ///
@@ -48,6 +92,7 @@ pub enum ChdTrackType {
 }
 
 impl ChdTrackType {
+    #[cfg(feature = "chd")]
     fn from_lib(t: LibTrackType) -> Self {
         match t {
             LibTrackType::Mode1Raw => ChdTrackType::Mode1Raw,
@@ -134,8 +179,8 @@ impl ChdTrack {
 
 /// Metadata extracted from a CHD optical disc image.
 ///
-/// Created by [`open_chd`]; does not perform sector decompression.
-/// Use [`crate::sector_reader::ChdSectorReader`] to read actual sector data.
+/// Created by `open_chd` (feature `chd`); does not perform sector
+/// decompression. Use `ChdSectorReader` to read actual sector data.
 #[derive(Debug)]
 pub struct ChdInfo {
     /// Compressed hunk size in bytes (typically 8–64 KiB for CD-ROM).
@@ -196,14 +241,17 @@ impl ChdInfo {
 
 /// Open a CHD file and parse its track metadata.
 ///
-/// Reads the CHD header and track list via [`libchdman_rs`]; no sector data
+/// Reads the CHD header and track list via `libchdman-rs`; no sector data
 /// is decompressed.
+///
+/// Requires the `chd` feature (on by default) — see [`is_supported`].
 ///
 /// # Errors
 ///
 /// Returns an [`OpticaldiscsError::Io`] if the path does not exist or cannot
 /// be read; [`OpticaldiscsError::Chd`] for any libchdman-rs failure (invalid
 /// header, unsupported format, etc.).
+#[cfg(feature = "chd")]
 pub fn open_chd(path: impl AsRef<Path>) -> Result<ChdInfo> {
     let path = path.as_ref();
 
@@ -325,9 +373,16 @@ mod tests {
         assert!(info.find_first_data_track().is_none());
     }
 
+    #[cfg(feature = "chd")]
     #[test]
     fn open_chd_nonexistent_returns_io_error() {
         let err = open_chd("nonexistent_file_that_does_not_exist.chd").unwrap_err();
         assert!(matches!(err, OpticaldiscsError::Io(_)));
+    }
+
+    #[test]
+    fn is_supported_tracks_the_feature() {
+        assert_eq!(is_supported(), cfg!(feature = "chd"));
+        assert_eq!(is_supported(), crate::DiscFormat::Chd.is_supported());
     }
 }

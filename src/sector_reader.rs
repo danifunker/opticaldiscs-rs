@@ -257,10 +257,14 @@ impl SectorReader for BinCueSectorReader {
 ///
 /// Create one via [`ChdSectorReader::open`] by passing the path to the `.chd`
 /// file and the data track obtained from [`crate::chd::open_chd`].
+///
+/// Requires the `chd` feature (on by default); see [`crate::chd::is_supported`].
+#[cfg(feature = "chd")]
 pub struct ChdSectorReader {
     inner: libchdman_rs::cd::CdCookedReader,
 }
 
+#[cfg(feature = "chd")]
 impl ChdSectorReader {
     /// Open a CHD file and prepare to read sectors from `track`.
     ///
@@ -296,6 +300,7 @@ impl ChdSectorReader {
     }
 }
 
+#[cfg(feature = "chd")]
 impl SectorReader for ChdSectorReader {
     /// Read a 2048-byte cooked sector at `lba` (track-relative).
     fn read_sector(&mut self, lba: u64) -> Result<Vec<u8>> {

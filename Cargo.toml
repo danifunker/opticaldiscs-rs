@@ -1,6 +1,6 @@
 [package]
 name = "opticaldiscs"
-version = "0.13.0"
+version = "0.14.0"
 edition = "2021"
 license = "GPL-3.0"
 description = "Format-agnostic optical disc image reading and filesystem browsing (ISO, BIN/CUE, CHD)"
@@ -9,9 +9,21 @@ keywords = ["cd-rom", "dvd", "iso9660", "disc-image", "chd"]
 categories = ["filesystem", "encoding", "parser-implementations"]
 
 [features]
-default = []
+# `chd` is ON by default: CHD is one of this crate's headline container formats,
+# so a plain `cargo add opticaldiscs` keeps reading `.chd` files. Turn it off
+# (`default-features = false`) on targets where libchdman-rs can't be built or
+# fetched — it is a `links` crate wrapping MAME's C++ CHD core, and its
+# `prebuilt` feature downloads a static archive at build time. See the `chd`
+# entry below.
+default = ["chd"]
 toc    = ["dep:sha1", "dep:base64"]   # MusicBrainz + FreeDB DiscID calculation
 drives = []                            # physical optical drive enumeration
+# MAME CHD (`.chd`) reading, via libchdman-rs. Without it the crate still
+# *recognises* `.chd` (extension + `MComprHD` magic) but opening one fails with
+# `UnsupportedFormat`; ask at runtime with `DiscFormat::Chd.is_supported()` or
+# `chd::is_supported()`. Dropping it also drops libchdman-rs's build-time
+# archive download (ureq/sha2/hex), which matters for offline and cross builds.
+chd    = ["dep:libchdman-rs"]
 # DAEMON Tools MDX (.mdx / MDSv2): the descriptor is always AES-256-encrypted and
 # zlib-compressed, so this optional feature pulls in a small crypto stack. Left off
 # by default to keep the base build dependency-light.
@@ -21,7 +33,10 @@ mdx    = ["dep:aes", "dep:pbkdf2", "dep:ripemd"]
 thiserror = "2"
 log       = "0.4"
 cue_sheet = "0.3"
-libchdman-rs = { version = "0.288.8", features = ["prebuilt"] }
+
+# optional: only needed with feature "chd" (on by default)
+libchdman-rs = { version = "0.288.8", features = ["prebuilt"], optional = true }
+
 encoding_rs = "0.8"   # Shift-JIS (etc.) decoding for Japanese console headers
 flate2 = "1"          # deflate/gzip: PSP CSO blocks and gzip-compressed ISOs
 

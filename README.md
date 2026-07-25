@@ -25,6 +25,13 @@ parity with the `chdman` tool — including subcode handling, audio
 byte-swapping, and per-track frame semantics — at the cost of needing
 to link MAME's C++ code.
 
+This lives behind the **`chd` feature, on by default**. Because linking MAME's
+C++ core isn't possible everywhere, it can be dropped entirely with
+`default-features = false` — libchdman-rs then leaves the dependency graph, and
+every other container and filesystem keeps working. `.chd` files stay
+*recognised* either way; see [Feature Flags](#feature-flags) for the runtime
+`is_supported()` queries.
+
 By default, opticaldiscs-rs enables libchdman-rs's `prebuilt` feature,
 which downloads a pre-built static archive matching the build target
 from libchdman-rs's GitHub Releases instead of compiling MAME from
@@ -47,7 +54,7 @@ for the full list of supported targets, glibc floors, and escape hatches.
 |---|---|
 | ISO sector reader | ✓ |
 | BIN/CUE sector reader (raw 2352-byte) | ✓ |
-| CHD sector reader (via libchdman-rs) | ✓ |
+| CHD sector reader (via libchdman-rs) | ✓ (`chd` feature, on by default — optional since 0.14.0) |
 | PSP `.cso` (CISOv1) + gzip-compressed (`.gz`) image readers | ✓ (since 0.9.0) |
 | CloneCD (`.ccd` / `.img` / `.sub`) container | ✓ (since 0.9.0) |
 | Nero (`.nrg`) container | ✓ (since 0.9.0) |
@@ -96,10 +103,15 @@ for entry in fs.list_directory(&root)? {
 ## Cargo.toml
 
 ```toml
-opticaldiscs = "0.9"
+opticaldiscs = "0.14"
 
 # with optional features
-opticaldiscs = { version = "0.9", features = ["toc", "drives", "mdx"] }
+opticaldiscs = { version = "0.14", features = ["toc", "drives", "mdx"] }
+
+# without CHD — no libchdman-rs, no MAME C++ core, no build-time download.
+# For targets its prebuilt matrix doesn't cover and that can't compile MAME
+# (i486/i586, PowerPC, vintage macOS/Windows, offline builds).
+opticaldiscs = { version = "0.14", default-features = false, features = ["toc"] }
 ```
 
 To track unreleased changes, depend on the git repository instead:
@@ -110,14 +122,55 @@ opticaldiscs = { git = "https://github.com/danifunker/opticaldiscs-rs" }
 
 ## Feature Flags
 
-| Flag | Enables | Extra deps |
-|---|---|---|
-| `toc` | `DiscTOC`, MusicBrainz DiscID, FreeDB ID | `sha1`, `base64` |
-| `drives` | `list_drives()` — enumerate physical optical drives | — |
-| `mdx` | DAEMON Tools `.mdx` browsing (its descriptor is always AES-256-encrypted + zlib-compressed) | `aes`, `pbkdf2`, `ripemd` |
+| Flag | Default | Enables | Extra deps |
+|---|---|---|---|
+| `chd` | **on** | CHD (`.chd`) reading | `libchdman-rs` |
+| `toc` | off | `DiscTOC`, MusicBrainz DiscID, FreeDB ID | `sha1`, `base64` |
+| `drives` | off | `list_drives()` — enumerate physical optical drives | — |
+| `mdx` | off | DAEMON Tools `.mdx` browsing (its descriptor is always AES-256-encrypted + zlib-compressed) | `aes`, `pbkdf2`, `ripemd` |
 
-Without the `mdx` feature, `.mdx` files are still *recognised* (`DiscFormat::Mdx`)
-but report as unbrowsable rather than pulling in the crypto stack.
+`chd` and `mdx` gate a container's *read path*, not its recognition. Without
+either one, matching files are still identified — `DiscFormat::Chd` /
+`DiscFormat::Mdx` from the extension and from magic bytes — and opening one
+returns `UnsupportedFormat` with a message naming the missing feature. That lets
+a caller say "this is a CHD, but CHD support wasn't built in" instead of
+"unknown file".
+
+### Asking at runtime what this build supports
+
+Rather than sprinkling `cfg!(feature = "chd")` through your own code, query the
+crate:
+
+```rust
+use opticaldiscs::DiscFormat;
+
+// Direct: is CHD reading compiled in?
+if opticaldiscs::chd::is_supported() {
+    // `.chd` can be opened and browsed.
+}
+
+// General: works for any conditionally-compiled format.
+assert!(DiscFormat::Iso.is_supported());
+if !DiscFormat::Chd.is_supported() {
+    // Grey out the CHD entry in the UI instead of failing on open.
+}
+
+// File-open dialogs: `supported_extensions()` is everything the crate can
+// identify; `enabled_extensions()` is what this build can actually open.
+let filter = opticaldiscs::enabled_extensions();
+
+// Enumerate every known format and filter it yourself.
+let usable: Vec<_> = DiscFormat::ALL
+    .iter()
+    .copied()
+    .filter(|f| f.is_supported())
+    .collect();
+```
+
+The `chd` module itself always compiles: `ChdTrack`, `ChdTrackType`, `ChdInfo`
+and their helpers are plain Rust and stay available in a lean build, so code that
+names those types keeps compiling. Only `open_chd` and `ChdSectorReader` — the
+parts that touch MAME's C++ core — are gated.
 
 ## Used By
 
