@@ -35,7 +35,7 @@ log       = "0.4"
 cue_sheet = "0.3"
 
 # optional: only needed with feature "chd" (on by default)
-libchdman-rs = { version = "0.288.8", features = ["prebuilt"], optional = true }
+libchdman-rs = { version = "0.288.10", features = ["prebuilt"], optional = true }
 
 encoding_rs = "0.8"   # Shift-JIS (etc.) decoding for Japanese console headers
 flate2 = "1"          # deflate/gzip: PSP CSO blocks and gzip-compressed ISOs

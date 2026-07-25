@@ -291,10 +291,24 @@ impl ChdSectorReader {
             ))
         })?;
 
-        let inner =
-            libchdman_rs::cd::CdCookedReader::open_track(chd, track_index).map_err(|e| {
-                OpticaldiscsError::Chd(format!("open CHD track {}: {e:?}", track.track_no))
-            })?;
+        // `NotCdMedia` means the CHD is a hard-disk/DVD/A/V image rather than an
+        // optical one — an unsupported format, not a malfunction. Reachable when
+        // this reader is constructed directly; `crate::chd::open_chd` screens the
+        // same case earlier from the info record. Requires libchdman-rs >= 0.288.10:
+        // before that, this call aborted the process instead of returning.
+        let inner = libchdman_rs::cd::CdCookedReader::open_track(chd, track_index).map_err(
+            |e| match e {
+                libchdman_rs::ChdError::NotCdMedia => {
+                    OpticaldiscsError::UnsupportedFormat(format!(
+                        "{} is a CHD without CD/GD-ROM geometry, not a disc image",
+                        path.display()
+                    ))
+                }
+                other => {
+                    OpticaldiscsError::Chd(format!("open CHD track {}: {other:?}", track.track_no))
+                }
+            },
+        )?;
 
         Ok(Self { inner })
     }

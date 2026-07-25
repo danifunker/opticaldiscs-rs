@@ -618,9 +618,9 @@ checksum = "68ab91017fe16c622486840e4c83c9a37afeff978bd239b5293d61ece587de66"
 
 [[package]]
 name = "libchdman-rs"
-version = "0.288.8"
+version = "0.288.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f9e349d24a5de45ed8a8c9f01db055d0f393771881169c39ae39707618cffd22"
+checksum = "be4b0a0eb25ca64c7ab8d97e042a9bd46cc05b2a89d0d6777b9bd5d7437b8385"
 dependencies = [
  "cc",
  "hex",

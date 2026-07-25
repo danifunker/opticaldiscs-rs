@@ -25,6 +25,12 @@ parity with the `chdman` tool — including subcode handling, audio
 byte-swapping, and per-track frame semantics — at the cost of needing
 to link MAME's C++ code.
 
+**libchdman-rs 0.288.10 is a hard floor** (since opticaldiscs 0.14.0). Earlier
+versions abort the process when handed a CHD without CD track metadata — a
+hard-disk, DVD, or A/V image — and since `.chd` detection keys on magic bytes
+common to every CHD, that was reachable from `DiscImageInfo::open`. Such images
+now report `UnsupportedFormat` naming the actual media kind.
+
 This lives behind the **`chd` feature, on by default**. Because linking MAME's
 C++ core isn't possible everywhere, it can be dropped entirely with
 `default-features = false` — libchdman-rs then leaves the dependency graph, and

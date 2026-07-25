@@ -35,6 +35,42 @@ use libchdman_rs::Chd;
 #[cfg(feature = "chd")]
 use crate::error::{OpticaldiscsError, Result};
 
+/// Name the media kind a CHD's info record declares, for error messages.
+#[cfg(feature = "chd")]
+fn describe_media(info: &libchdman_rs::ChdInfo) -> &'static str {
+    if info.is_hd {
+        "hard-disk"
+    } else if info.is_dvd {
+        "DVD"
+    } else if info.is_av {
+        "A/V"
+    } else {
+        "non-CD"
+    }
+}
+
+/// Map a `cd::*` failure, translating "not CD media" to
+/// [`OpticaldiscsError::UnsupportedFormat`].
+///
+/// A hard-disk or DVD CHD is a perfectly valid file that simply isn't an optical
+/// disc image, so it is an unsupported *format* rather than a CHD malfunction —
+/// which lets a caller route it elsewhere instead of reporting corruption.
+///
+/// Requires libchdman-rs >= 0.288.10. Before that release these calls aborted
+/// the process (MAME's `cdrom_file` constructor throws a bare `nullptr`, which
+/// Rust frames cannot unwind), so there was no error to map; that is why
+/// `Cargo.toml` sets 0.288.10 as the floor.
+#[cfg(feature = "chd")]
+fn map_cd_err(path: &Path, e: libchdman_rs::ChdError) -> OpticaldiscsError {
+    match e {
+        libchdman_rs::ChdError::NotCdMedia => OpticaldiscsError::UnsupportedFormat(format!(
+            "{} is a CHD without CD/GD-ROM geometry, not a disc image",
+            path.display()
+        )),
+        other => OpticaldiscsError::Chd(format!("read CHD tracks: {other:?}")),
+    }
+}
+
 /// Whether this build can open CHD images — i.e. whether the `chd` feature is
 /// enabled.
 ///
@@ -270,8 +306,20 @@ pub fn open_chd(path: impl AsRef<Path>) -> Result<ChdInfo> {
         .info()
         .map_err(|e| OpticaldiscsError::Chd(format!("CHD info: {e:?}")))?;
 
-    let lib_tracks =
-        list_tracks(&chd).map_err(|e| OpticaldiscsError::Chd(format!("list CHD tracks: {e:?}")))?;
+    // A CHD is a generic container: hard-disk, DVD and A/V images share the
+    // `MComprHD` magic that `detect_format` keys on, so a non-optical CHD reaches
+    // this function routinely. Screen it out from the info record, which is
+    // already in hand — no `cdrom_file` construction, and the message names the
+    // actual media kind instead of a generic parse failure.
+    if !(info.is_cd || info.is_gd) {
+        return Err(OpticaldiscsError::UnsupportedFormat(format!(
+            "{} is a {} CHD, not a CD/GD-ROM disc image",
+            path.display(),
+            describe_media(&info),
+        )));
+    }
+
+    let lib_tracks = list_tracks(&chd).map_err(|e| map_cd_err(path, e))?;
 
     let mut tracks: Vec<ChdTrack> = lib_tracks
         .into_iter()
@@ -378,6 +426,65 @@ mod tests {
     fn open_chd_nonexistent_returns_io_error() {
         let err = open_chd("nonexistent_file_that_does_not_exist.chd").unwrap_err();
         assert!(matches!(err, OpticaldiscsError::Io(_)));
+    }
+
+    /// A hard-disk CHD must come back as an error, not take the process with it.
+    ///
+    /// `detect_format` keys CHD off the `MComprHD` magic, which every CHD carries
+    /// regardless of media, so a hard-disk image reaches the CD code paths through
+    /// the ordinary front door. Up to libchdman-rs 0.288.9 that **aborted the
+    /// process**: MAME's `cdrom_file` constructor reports bad geometry by throwing
+    /// a bare `nullptr`, and Rust frames cannot unwind a foreign exception. This
+    /// test is the floor guard — against an older libchdman-rs it does not fail,
+    /// it kills the test binary.
+    #[cfg(feature = "chd")]
+    #[test]
+    fn hard_disk_chd_is_unsupported_not_an_abort() {
+        use std::io::Write;
+
+        let dir = tempfile::tempdir().unwrap();
+        let raw = dir.path().join("disk.img");
+        // 64 KiB of zeros: a whole number of both 512-byte units and 4 KiB hunks.
+        let mut f = std::fs::File::create(&raw).unwrap();
+        f.write_all(&vec![0u8; 64 * 1024]).unwrap();
+        f.flush().unwrap();
+        drop(f);
+
+        let chd_path = dir.path().join("disk.chd");
+        libchdman_rs::hd::create_from_path(
+            &raw,
+            &chd_path,
+            libchdman_rs::hd::HdCreateOptions::default(),
+            &mut |_| {},
+            &|| false,
+        )
+        .expect("could not build the hard-disk CHD fixture");
+
+        // Confirm the fixture is what this test is about before asserting on it.
+        let info = Chd::open(chd_path.to_str().unwrap(), false, None)
+            .unwrap()
+            .info()
+            .unwrap();
+        assert!(info.is_hd, "fixture should be hard-disk media");
+        assert!(
+            !info.is_cd && !info.is_gd,
+            "fixture should not be CD/GD-ROM"
+        );
+
+        // Screened from the info record, so no `cdrom_file` is ever constructed.
+        match open_chd(&chd_path) {
+            Err(OpticaldiscsError::UnsupportedFormat(msg)) => {
+                assert!(msg.contains("hard-disk"), "got: {msg}");
+            }
+            other => panic!("expected UnsupportedFormat, got {other:?}"),
+        }
+
+        // Same through the front door, which is how a consumer actually hits it.
+        let err = crate::detect::DiscImageInfo::open(&chd_path).unwrap_err();
+        assert!(
+            matches!(err, OpticaldiscsError::UnsupportedFormat(_)),
+            "expected UnsupportedFormat, got {err:?}"
+        );
     }
 
     #[test]

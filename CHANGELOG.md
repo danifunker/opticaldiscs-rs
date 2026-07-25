@@ -5,6 +5,50 @@ All notable changes to this crate are documented here. This project follows
 
 ## 0.14.0
 
+### Fixed — a non-CD CHD no longer aborts the process
+
+**libchdman-rs floor raised to 0.288.10** (was 0.288.8). Below that version,
+handing a CHD without CD track metadata — an ordinary hard-disk, DVD, or A/V
+image — to any `cd::*` call **killed the host process outright**:
+
+```
+libc++abi: terminating due to uncaught exception of type std::nullptr_t
+fatal runtime error: Rust cannot catch foreign exceptions, aborting
+```
+
+MAME's `cdrom_file` constructor signals bad input by throwing a bare `nullptr`,
+and Rust frames cannot unwind a foreign exception, so no caller ever got the
+chance to handle it.
+
+**This was reachable straight through this crate's front door.** `detect_format`
+identifies CHD by the `MComprHD` magic, which *every* CHD carries regardless of
+media, so `DiscImageInfo::open("some-harddisk.chd")` took the CD path and
+aborted. Nothing a consumer could write would prevent it — hence a hard floor
+rather than a compatible-range bump.
+
+Two changes on top of the dependency bump:
+
+- **`open_chd` now screens media kind from the CHD's info record**, which it
+  already reads — so no `cdrom_file` is constructed at all for a non-CD CHD, and
+  the error names the actual media: `"… is a hard-disk CHD, not a CD/GD-ROM disc
+  image"`.
+- **`ChdError::NotCdMedia` maps to `OpticaldiscsError::UnsupportedFormat`**, not
+  `OpticaldiscsError::Chd`, in both `open_chd` and `ChdSectorReader::open`. A
+  hard-disk CHD is a valid file that simply isn't an optical image, so callers can
+  route it elsewhere instead of reporting corruption. This is not a compatibility
+  break: before 0.288.10 the case aborted, so no consumer could have been
+  matching on an error for it.
+
+Covered by `chd::tests::hard_disk_chd_is_unsupported_not_an_abort`, which builds
+a real hard-disk CHD fixture and asserts both entry points refuse it. Against an
+older libchdman-rs that test does not fail — it kills the test binary, which is
+the point.
+
+**Known gap, unchanged by this release:** a **DVD** CHD is still rejected. It is
+legitimately readable in principle (a flat run of 2048-byte sectors, and this
+crate browses UDF fine), but there is no reader for it yet. Previously it aborted;
+now it reports `UnsupportedFormat`.
+
 ### Changed — CHD support is now an (on-by-default) feature
 
 `libchdman-rs` is no longer a hard dependency. CHD reading moved behind a new
