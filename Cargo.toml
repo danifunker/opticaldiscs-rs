@@ -8,6 +8,12 @@ repository = "https://github.com/danifunker/opticaldiscs-rs"
 keywords = ["cd-rom", "dvd", "iso9660", "disc-image", "chd"]
 categories = ["filesystem", "encoding", "parser-implementations"]
 
+# Disc-image fixtures are development-only. The release pipeline enforces a slim
+# tarball — no `.bin`/`.cue`/`.iso`/`.chd`, under a 2 MB cap — so these stay in
+# the repository and out of the crate. The tests that need them skip when they
+# are absent, the same way the CHD fixture tests already do.
+exclude = ["tests/fixtures/*"]
+
 [features]
 # `chd` is ON by default: CHD is one of this crate's headline container formats,
 # so a plain `cargo add opticaldiscs` keeps reading `.chd` files. Turn it off
