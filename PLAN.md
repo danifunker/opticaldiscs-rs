@@ -7,7 +7,7 @@ A format-agnostic Rust library for reading and browsing optical disc images
 
 ## License
 
-This library is licensed **GPL-3.0**.
+This library is licensed **MIT** (since 0.15.0; 0.14.0 and earlier were GPL-3.0).
 
 ---
 
@@ -118,7 +118,8 @@ Progress key: `[ ]` pending · `[x]` done · `[-]` skipped/deferred
 ### Phase 0 — Repository Scaffold ✅
 **Goal:** Working Cargo library that compiles with `cargo build` and `cargo test`.
 
-- [x] **0.1** Initialize `Cargo.toml` as a library crate (`opticaldiscs`, GPL-3.0)
+- [x] **0.1** Initialize `Cargo.toml` as a library crate (`opticaldiscs`; GPL-3.0 at
+              the time, MIT since 0.15.0)
 - [x] **0.2** Create `src/lib.rs` with module stubs and feature-flag gates
 - [x] **0.3** Add `.gitignore` entries for `target/`, `*.swp`, `Cargo.lock` (lib convention)
 - [x] **0.4** Add `README.md` (crate description, quick example, license badge)

@@ -32,6 +32,12 @@ pub enum OpticaldiscsError {
     #[error("CUE error: {0}")]
     Cue(String),
 
+    /// A container's track table holds no data track.
+    ///
+    /// Not raised for BIN/CUE, CloneCD or CHD: a pure CD-DA disc has no data
+    /// track by definition, so those open as
+    /// [`FilesystemType::None`](crate::FilesystemType::None) instead. See
+    /// [`DiscImageInfo::is_audio_only`](crate::detect::DiscImageInfo::is_audio_only).
     #[error("No data track found")]
     NoDataTrack,
 }

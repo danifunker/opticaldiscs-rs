@@ -173,6 +173,19 @@ pub struct DiscImageInfo {
     /// disc carries no (or a malformed) El Torito boot catalog. Detection is
     /// lenient: a bad catalog leaves this `None` rather than failing the open.
     pub el_torito: Option<crate::el_torito::ElTorito>,
+    /// Every track on the disc, in track-number order.
+    ///
+    /// Populated for BIN/CUE, CloneCD and CHD, so a caller can report
+    /// "1 data + 12 audio" rather than describing only the data track that
+    /// [`filesystem`](Self::filesystem) came from.
+    ///
+    /// Empty for the single-track containers that have no track table at all
+    /// (plain ISO, CSO, gzip, Nintendo, and DVD CHDs), and — for now — for Nero,
+    /// Alcohol, DiscJuggler and DAEMON Tools, whose parsers resolve each track's
+    /// position within the *file* but not its address on the disc.
+    ///
+    /// See [`is_audio_only`](Self::is_audio_only) for the no-data-track case.
+    pub tracks: Vec<crate::track::DiscTrack>,
     /// Disc Table of Contents, if the format provides track metadata.
     ///
     /// Present for BIN/CUE and CHD images; `None` for plain ISO files.
@@ -222,6 +235,58 @@ impl DiscImageInfo {
         }
     }
 
+    /// True when the disc is pure CD-DA: it has tracks, and every one is audio.
+    ///
+    /// Such a disc carries no filesystem *by definition*, so
+    /// [`filesystem`](Self::filesystem) is [`FilesystemType::None`] and
+    /// [`open`](Self::open) succeeds — an audio CD is a valid disc, not a
+    /// failed data one. Browsing it still fails, because there is nothing to
+    /// browse. Returns false for a container with no track table.
+    ///
+    /// ```no_run
+    /// use opticaldiscs::detect::DiscImageInfo;
+    ///
+    /// let info = DiscImageInfo::open("album.cue")?;
+    /// if info.is_audio_only() {
+    ///     println!("{} audio tracks, no filesystem", info.tracks.len());
+    /// }
+    /// # Ok::<(), opticaldiscs::OpticaldiscsError>(())
+    /// ```
+    pub fn is_audio_only(&self) -> bool {
+        !self.tracks.is_empty() && self.tracks.iter().all(|t| t.is_audio())
+    }
+
+    /// Describe a disc whose track table holds no data track.
+    ///
+    /// Everything a filesystem probe would have filled in stays empty; the track
+    /// list and (with the `toc` feature) the TOC are all there is to report, and
+    /// for an audio CD they are all a caller wants.
+    fn audio_only(
+        path: &Path,
+        format: DiscFormat,
+        tracks: Vec<crate::track::DiscTrack>,
+        #[cfg(feature = "toc")] toc: Option<crate::toc::DiscTOC>,
+    ) -> Self {
+        Self {
+            path: path.to_path_buf(),
+            format,
+            filesystem: FilesystemType::None,
+            hybrid_filesystems: Vec::new(),
+            volume_label: None,
+            media_size_bytes: None,
+            pvd: None,
+            hfs_mdb: None,
+            hfsplus_header: None,
+            sgi_header: None,
+            efs_partition_offset: None,
+            game: None,
+            el_torito: None,
+            tracks,
+            #[cfg(feature = "toc")]
+            toc,
+        }
+    }
+
     /// Probe a DAEMON Tools (`.mdx`) image via its first data track.
     #[cfg(feature = "mdx")]
     fn probe_mdx(path: &Path) -> Result<Self> {
@@ -267,6 +332,8 @@ impl DiscImageInfo {
             efs_partition_offset: None,
             game: Some(game),
             el_torito: None,
+            // A Nintendo disc image is one data area with no CD track table.
+            tracks: Vec::new(),
             #[cfg(feature = "toc")]
             toc: None,
         })
@@ -340,6 +407,8 @@ impl DiscImageInfo {
             efs_partition_offset: sgi.efs_partition_offset,
             game,
             el_torito,
+            // Filled in by the callers that parsed a track table.
+            tracks: Vec::new(),
             #[cfg(feature = "toc")]
             toc,
         })
@@ -369,49 +438,52 @@ impl DiscImageInfo {
         };
 
         let tracks = parse_cue_tracks(&cue_path)?;
-
-        // Clone the data track to release the borrow on `tracks` before use below.
-        let data_track = tracks
-            .iter()
-            .find(|t| t.is_data())
-            .ok_or(OpticaldiscsError::NoDataTrack)?
-            .clone();
-
-        let mut reader = BinCueSectorReader::open(&data_track)?;
-
-        #[cfg(feature = "toc")]
-        let toc = build_bincue_toc(&tracks);
-
-        Self::build(
-            path,
-            DiscFormat::BinCue,
-            &mut reader,
-            #[cfg(feature = "toc")]
-            toc,
-        )
+        Self::from_bin_tracks(path, DiscFormat::BinCue, &tracks)
     }
 
     /// Probe a CloneCD (`.ccd`/`.img`) image via its first data track.
     fn probe_ccd(path: &Path) -> Result<Self> {
         let tracks = crate::ccd::parse_ccd(path)?;
-        let data_track = tracks
-            .iter()
-            .find(|t| t.is_data())
-            .ok_or(OpticaldiscsError::NoDataTrack)?
-            .clone();
+        Self::from_bin_tracks(path, DiscFormat::CloneCd, &tracks)
+    }
+
+    /// Probe the first data track of a CUE- or CCD-described disc.
+    ///
+    /// A disc with no data track is not an error: a pure CD-DA disc has none by
+    /// definition, so it is described through [`audio_only`](Self::audio_only)
+    /// instead of failing the open.
+    fn from_bin_tracks(
+        path: &Path,
+        format: DiscFormat,
+        tracks: &[crate::bincue::BinTrack],
+    ) -> Result<Self> {
+        let disc_tracks = crate::bincue::disc_tracks(tracks);
+
+        #[cfg(feature = "toc")]
+        let toc = build_bincue_toc(tracks);
+
+        // Clone the data track to release the borrow on `tracks` before use below.
+        let Some(data_track) = tracks.iter().find(|t| t.is_data()).cloned() else {
+            return Ok(Self::audio_only(
+                path,
+                format,
+                disc_tracks,
+                #[cfg(feature = "toc")]
+                toc,
+            ));
+        };
 
         let mut reader = BinCueSectorReader::open(&data_track)?;
 
-        #[cfg(feature = "toc")]
-        let toc = build_bincue_toc(&tracks);
-
-        Self::build(
+        let mut info = Self::build(
             path,
-            DiscFormat::CloneCd,
+            format,
             &mut reader,
             #[cfg(feature = "toc")]
             toc,
-        )
+        )?;
+        info.tracks = disc_tracks;
+        Ok(info)
     }
 
     /// Probe a Nero (`.nrg`) image via its first data track.
@@ -584,7 +656,7 @@ impl DiscImageInfo {
     ///   [`DvdChdSectorReader`]; no tracks, so no TOC.
     /// - **CD / GD-ROM** — CHT2 track metadata is parsed, the first data track
     ///   located, and the filesystem probed through a [`ChdSectorReader`].
-    ///   Audio-only discs (no data track) return `FilesystemType::Unknown`.
+    ///   Audio-only discs (no data track) return [`FilesystemType::None`].
     /// - **hard-disk / A/V** — not optical media; rejected as
     ///   [`OpticaldiscsError::UnsupportedFormat`].
     #[cfg(feature = "chd")]
@@ -608,27 +680,19 @@ impl DiscImageInfo {
         #[cfg(feature = "toc")]
         let toc = build_chd_toc(&chd_info.tracks);
 
+        let disc_tracks = chd_disc_tracks(&chd_info.tracks);
+
         let data_track = match chd_info.find_first_data_track() {
             Some(track) => track.clone(),
             None => {
                 // Audio-only disc — valid CHD, but no filesystem to probe
-                return Ok(Self {
-                    path: path.to_path_buf(),
-                    format: DiscFormat::Chd,
-                    filesystem: FilesystemType::Unknown,
-                    hybrid_filesystems: Vec::new(),
-                    volume_label: None,
-                    media_size_bytes: None,
-                    pvd: None,
-                    hfs_mdb: None,
-                    hfsplus_header: None,
-                    sgi_header: None,
-                    efs_partition_offset: None,
-                    game: None,
-                    el_torito: None,
+                return Ok(Self::audio_only(
+                    path,
+                    DiscFormat::Chd,
+                    disc_tracks,
                     #[cfg(feature = "toc")]
                     toc,
-                });
+                ));
             }
         };
 
@@ -638,24 +702,28 @@ impl DiscImageInfo {
             if let Some(hd) = chd_info.find_gdrom_hd_track() {
                 let inner = ChdSectorReader::open(path, hd)?;
                 let mut reader = crate::sector_reader::GdromSectorReader::new(Box::new(inner));
-                return Self::build(
+                let mut info = Self::build(
                     path,
                     DiscFormat::Chd,
                     &mut reader,
                     #[cfg(feature = "toc")]
                     toc,
-                );
+                )?;
+                info.tracks = disc_tracks;
+                return Ok(info);
             }
         }
 
         let mut reader = ChdSectorReader::open(path, &data_track)?;
-        Self::build(
+        let mut info = Self::build(
             path,
             DiscFormat::Chd,
             &mut reader,
             #[cfg(feature = "toc")]
             toc,
-        )
+        )?;
+        info.tracks = disc_tracks;
+        Ok(info)
     }
 
     /// Without the `chd` feature, `.chd` files are recognised but not browsable.
@@ -673,65 +741,64 @@ impl DiscImageInfo {
     }
 }
 
+// ── Track-list helpers ────────────────────────────────────────────────────────
+
+/// Describe CHD track metadata as [`DiscTrack`](crate::track::DiscTrack)s.
+///
+/// A CHD stores its tracks back to back, so `frame_offset` is already the
+/// track's address on the disc — the same value [`build_chd_toc`] feeds the TOC.
+#[cfg(feature = "chd")]
+fn chd_disc_tracks(tracks: &[crate::chd::ChdTrack]) -> Vec<crate::track::DiscTrack> {
+    use crate::bincue::TrackType;
+    use crate::chd::ChdTrackType;
+
+    tracks
+        .iter()
+        .map(|t| crate::track::DiscTrack {
+            number: t.track_no,
+            track_type: match &t.track_type {
+                ChdTrackType::Audio => TrackType::Audio,
+                ChdTrackType::Mode1Raw => TrackType::Mode1Raw,
+                ChdTrackType::Mode1Cooked => TrackType::Mode1Cooked,
+                ChdTrackType::Mode2Form2 => TrackType::Mode2Form2,
+                // Mode 2 raw and form 1 are both 2352-byte sectors with user
+                // data at 24. The only `Unknown` values MAME produces are
+                // MODE2 and MODE2_FORM_MIX, which are that shape too.
+                ChdTrackType::Mode2Raw | ChdTrackType::Mode2Form1 => TrackType::Mode2Form1,
+                ChdTrackType::Unknown(_) if t.is_data() => TrackType::Mode2Form1,
+                ChdTrackType::Unknown(_) => TrackType::Audio,
+            },
+            start_lba: t.frame_offset,
+            length_sectors: t.frames as u64,
+        })
+        .collect()
+}
+
 // ── TOC helpers (feature = "toc") ─────────────────────────────────────────────
 
 /// Build a [`DiscTOC`] from a BIN/CUE track list.
 ///
-/// A track's `file_byte_offset` is its INDEX 01 *relative to its own BIN file*.
-/// For a single-BIN CUE every track lives in the same file, so those offsets
-/// are already absolute disc positions.  For a multi-FILE CUE (one BIN per
-/// track, common in redump-style dumps) each offset is only the local pregap of
-/// that file, so we must accumulate a running frame total across files to
-/// recover absolute, strictly-increasing offsets.
-///
-/// We handle both layouts uniformly by tracking the cumulative frame count of
-/// all *previous* files and adding each track's local offset on top.  The
-/// lead-out is the total frame count across every BIN file.  Returns `None` if
-/// the track list is empty or a BIN file size cannot be determined.
+/// The absolute geometry comes from [`crate::bincue::absolute_track_spans`],
+/// which resolves single-BIN and multi-FILE sheets alike; the lead-out is the
+/// total frame count across every BIN file. Returns `None` if the track list is
+/// empty or a BIN file size cannot be determined.
 #[cfg(feature = "toc")]
 fn build_bincue_toc(tracks: &[crate::bincue::BinTrack]) -> Option<crate::toc::DiscTOC> {
     use crate::toc::{DiscTOC, TrackInfo};
-    use std::path::Path;
 
-    if tracks.is_empty() {
-        return None;
-    }
+    let (spans, lead_out) = crate::bincue::absolute_track_spans(tracks)?;
 
-    let mut track_infos: Vec<TrackInfo> = Vec::with_capacity(tracks.len());
-
-    // Frames in all files seen *before* the current one.
-    let mut running_frames: u64 = 0;
-    // Frames in the file the current track belongs to.
-    let mut cur_file_frames: u64 = 0;
-    let mut prev_bin: Option<&Path> = None;
-
-    for t in tracks {
-        let sector_size = t.sector_size();
-
-        // When the BIN file changes, fold the previous file's full length into
-        // the running total and measure the new file.  Single-BIN CUEs take
-        // this branch exactly once (running_frames stays 0).
-        if prev_bin != Some(t.bin_path.as_path()) {
-            if prev_bin.is_some() {
-                running_frames += cur_file_frames;
-            }
-            let file_len = std::fs::metadata(&t.bin_path).ok()?.len();
-            cur_file_frames = file_len / sector_size;
-            prev_bin = Some(t.bin_path.as_path());
-        }
-
-        let local_frames = t.file_byte_offset / sector_size;
-        track_infos.push(TrackInfo {
+    let track_infos: Vec<TrackInfo> = tracks
+        .iter()
+        .zip(&spans)
+        .map(|(t, span)| TrackInfo {
             number: t.track_no as u8,
-            offset: (running_frames + local_frames) as u32,
+            offset: span.start_lba as u32,
             track_type: t.track_type.cue_label().to_string(),
-        });
-    }
+        })
+        .collect();
 
-    // Lead-out = total frames across every file.
-    let lead_out_raw = (running_frames + cur_file_frames) as u32;
-
-    DiscTOC::from_tracks(&track_infos, lead_out_raw)
+    DiscTOC::from_tracks(&track_infos, lead_out as u32)
 }
 
 /// Build a [`DiscTOC`] from CHD track metadata.

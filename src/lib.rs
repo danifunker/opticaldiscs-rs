@@ -58,6 +58,12 @@ pub mod chd;
 pub mod iso9660;
 pub mod sector_reader;
 
+// CUE sheet syntax, kept apart from the BIN/CUE geometry in `bincue`.
+pub mod cue;
+
+// Container-independent track list (`DiscImageInfo::tracks`).
+pub mod track;
+
 // Phase 5
 #[cfg(feature = "toc")]
 pub mod toc;
@@ -140,7 +146,9 @@ pub use el_torito_edit::{make_bootable, ElToritoEditor, NewBootEntry};
 pub use sector_reader::SectorReader;
 
 // Phase 3
+pub use bincue::TrackType;
 pub use sector_reader::BinCueSectorReader;
+pub use track::DiscTrack;
 
 // Phase 4 (feature "chd", on by default)
 #[cfg(feature = "chd")]

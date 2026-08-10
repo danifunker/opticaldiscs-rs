@@ -17,6 +17,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Filesystem  : {}", info.filesystem.display_name());
     println!("Volume label: {:?}", info.volume_label);
 
+    if !info.tracks.is_empty() {
+        let data = info.tracks.iter().filter(|t| t.is_data()).count();
+        let audio = info.tracks.len() - data;
+        println!("\n── Tracks ({data} data + {audio} audio) ──");
+        for t in &info.tracks {
+            let (m, s, f) = t.start_msf();
+            let length = match t.duration_msf() {
+                Some((dm, ds, df)) => format!("{dm:02}:{ds:02}:{df:02}"),
+                None => "  ??:??".to_string(),
+            };
+            println!(
+                "{:>3}  {:<10}  start {m:02}:{s:02}:{f:02}  ({:>8} sectors, {length})",
+                t.number,
+                t.cue_label(),
+                t.length_sectors
+            );
+        }
+    }
+
     if let Some(g) = &info.game {
         println!("\n── Game disc ──");
         println!("Console     : {}", g.console.display_name());
@@ -25,6 +44,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("Region      : {:?}", g.region.map(|r| r.display_name()));
         println!("Maker       : {:?}", g.maker);
         println!("Version     : {:?}", g.version);
+    }
+
+    if info.is_audio_only() {
+        println!("\n(audio-only disc — no filesystem to browse)");
+        return Ok(());
     }
 
     if !info.filesystem.is_browsable() {

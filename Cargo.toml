@@ -1,8 +1,8 @@
 [package]
 name = "opticaldiscs"
-version = "0.14.0"
+version = "0.15.0"
 edition = "2021"
-license = "GPL-3.0"
+license = "MIT"
 description = "Format-agnostic optical disc image reading and filesystem browsing (ISO, BIN/CUE, CHD)"
 repository = "https://github.com/danifunker/opticaldiscs-rs"
 keywords = ["cd-rom", "dvd", "iso9660", "disc-image", "chd"]
@@ -32,7 +32,6 @@ mdx    = ["dep:aes", "dep:pbkdf2", "dep:ripemd"]
 [dependencies]
 thiserror = "2"
 log       = "0.4"
-cue_sheet = "0.3"
 
 # optional: only needed with feature "chd" (on by default)
 libchdman-rs = { version = "0.288.10", features = ["prebuilt"], optional = true }

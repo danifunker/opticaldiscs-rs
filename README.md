@@ -2,7 +2,7 @@
 
 [![crates.io](https://img.shields.io/crates/v/opticaldiscs.svg)](https://crates.io/crates/opticaldiscs)
 [![CI](https://github.com/danifunker/opticaldiscs-rs/actions/workflows/ci.yml/badge.svg)](https://github.com/danifunker/opticaldiscs-rs/actions)
-[![License: GPL-3.0](https://img.shields.io/badge/license-GPL--3.0-blue.svg)](LICENSE)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 Format-agnostic optical disc image reading and filesystem browsing for Rust.
 
@@ -75,6 +75,9 @@ for the full list of supported targets, glibc floors, and escape hatches.
 |---|---|
 | ISO sector reader | ✓ |
 | BIN/CUE sector reader (raw 2352-byte) | ✓ |
+| Lenient in-house CUE parser (unpadded numbers, multi-word `REM`, `CATALOG`, unknown keywords) | ✓ (since 0.15.0) |
+| Audio-only (CD-DA) discs open with `FilesystemType::None` | ✓ (since 0.15.0) |
+| Per-track listing on `DiscImageInfo::tracks` — BIN/CUE, CloneCD, CHD | ✓ (since 0.15.0) |
 | CHD sector reader — CD / GD-ROM (via libchdman-rs) | ✓ (`chd` feature, on by default — optional since 0.14.0) |
 | CHD sector reader — **DVD** (flat 2048-byte sectors, no tracks) | ✓ (since 0.14.0) |
 | PSP `.cso` (CISOv1) + gzip-compressed (`.gz`) image readers | ✓ (since 0.9.0) |
@@ -125,15 +128,15 @@ for entry in fs.list_directory(&root)? {
 ## Cargo.toml
 
 ```toml
-opticaldiscs = "0.14"
+opticaldiscs = "0.15"
 
 # with optional features
-opticaldiscs = { version = "0.14", features = ["toc", "drives", "mdx"] }
+opticaldiscs = { version = "0.15", features = ["toc", "drives", "mdx"] }
 
 # without CHD — no libchdman-rs, no MAME C++ core, no build-time download.
 # For targets its prebuilt matrix doesn't cover and that can't compile MAME
 # (i486/i586, PowerPC, vintage macOS/Windows, offline builds).
-opticaldiscs = { version = "0.14", default-features = false, features = ["toc"] }
+opticaldiscs = { version = "0.15", default-features = false, features = ["toc"] }
 ```
 
 To track unreleased changes, depend on the git repository instead:
@@ -201,4 +204,16 @@ parts that touch MAME's C++ core — are gated.
 
 ## License
 
-GPL-3.0 — see [LICENSE](LICENSE).
+MIT — see [LICENSE](LICENSE). Relicensed from GPL-3.0 in 0.15.0; every release up
+to and including 0.14.0 remains available under GPL-3.0.
+
+The dependency tree is entirely permissive (MIT / Apache-2.0 / BSD / ISC), with no
+copyleft. Two dependencies carry attribution terms that a **binary** distribution
+must reproduce:
+
+- **`libchdman-rs`** (BSD-3-Clause), which statically links MAME's CHD core —
+  also BSD-3-Clause, © Aaron Giles. Enabled by the default `chd` feature.
+- **`encoding_rs`** (Apache-2.0 OR MIT, AND BSD-3-Clause).
+
+Using this crate as a library imposes no such duty; shipping a compiled binary
+does.

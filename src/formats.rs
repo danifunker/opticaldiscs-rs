@@ -244,6 +244,14 @@ pub enum FilesystemType {
     Opera,
     /// Xbox / Xbox 360 XDVDFS (little-endian, binary-tree directories).
     Xdvdfs,
+    /// The disc carries no filesystem *by design* — every track is Red Book
+    /// audio, so there is nothing to browse and nothing wrong.
+    ///
+    /// Distinct from [`Unknown`](Self::Unknown), which means a data track is
+    /// present but its filesystem was not recognised. Test for it with
+    /// [`is_none`](Self::is_none), and see
+    /// [`DiscImageInfo::is_audio_only`](crate::detect::DiscImageInfo::is_audio_only).
+    None,
     /// Could not be determined.
     Unknown,
 }
@@ -266,8 +274,22 @@ impl FilesystemType {
             Self::Cdi => "CD-i",
             Self::Opera => "3DO Opera",
             Self::Xdvdfs => "Xbox XDVDFS",
+            Self::None => "None (audio only)",
             Self::Unknown => "Unknown",
         }
+    }
+
+    /// Returns true when the disc has no filesystem at all, as on an audio CD.
+    ///
+    /// ```
+    /// use opticaldiscs::FilesystemType;
+    ///
+    /// assert!(FilesystemType::None.is_none());
+    /// // "Unrecognised" is a different claim from "absent".
+    /// assert!(!FilesystemType::Unknown.is_none());
+    /// ```
+    pub fn is_none(self) -> bool {
+        matches!(self, Self::None)
     }
 
     /// Returns true if this filesystem can be browsed by the library.

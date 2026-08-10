@@ -230,10 +230,16 @@ fn open_sector_reader(info: &DiscImageInfo) -> Result<Box<dyn SectorReader>, Fil
             let cue_path = resolve_cue_path(path)?;
             let tracks = crate::bincue::parse_cue_tracks(&cue_path)
                 .map_err(|e| FilesystemError::InvalidData(e.to_string()))?;
+            // An audio-only disc opens fine (see `DiscImageInfo::is_audio_only`)
+            // but has no filesystem, so browsing it is where it has to stop.
             let data_track = tracks
                 .iter()
                 .find(|t| t.is_data())
-                .ok_or_else(|| FilesystemError::InvalidData("no data track in CUE sheet".into()))?
+                .ok_or_else(|| {
+                    FilesystemError::InvalidData(
+                        "no data track in CUE sheet (audio-only disc: nothing to browse)".into(),
+                    )
+                })?
                 .clone();
             let reader =
                 crate::sector_reader::BinCueSectorReader::open(&data_track).map_err(disc_err)?;

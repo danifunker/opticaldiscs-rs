@@ -1,0 +1,17 @@
+REM GENRE Alternative Rock
+REM DATE 1997
+REM DISCID 8A0B6A0B
+REM COMMENT "ExactAudioCopy v0.99pb4"
+CATALOG 0000000000000
+PERFORMER "An Artist"
+TITLE "An Album"
+FILE "eac-audio-cd.bin" BINARY
+  TRACK 01 AUDIO
+    TITLE "First Track"
+    PERFORMER "An Artist"
+    INDEX 01 00:00:00
+  TRACK 02 AUDIO
+    TITLE "Second Track"
+    PERFORMER "An Artist"
+    INDEX 00 00:05:00
+    INDEX 01 00:07:00

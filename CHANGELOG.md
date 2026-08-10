@@ -3,6 +3,134 @@
 All notable changes to this crate are documented here. This project follows
 [Semantic Versioning](https://semver.org/).
 
+## 0.15.0
+
+Two CUE sheet defects found by opening real media, plus the track list that the
+second one needed. Both were reported against 0.13.0 and confirmed on 0.14.0.
+Removing the parser behind the first one also cleared the way for a relicense to
+MIT.
+
+### Changed — relicensed from GPL-3.0 to MIT
+
+**This crate is now MIT.** Releases up to and including 0.14.0 stay GPL-3.0;
+nothing already published changes, and anyone who wants copyleft terms can keep
+using 0.14.0.
+
+The GPL-3.0 was never a preference — it was forced by `cue_sheet`, the only
+copyleft dependency in the tree. Replacing it with an in-house parser (below)
+removed the constraint, and MIT is the deliberate choice that followed.
+
+Nothing else in the tree is copyleft: all 108 transitive dependencies are
+MIT / Apache-2.0 / BSD / ISC / 0BSD / Unlicense / Unicode-3.0 /
+CDLA-Permissive-2.0. No third-party source is vendored into this repository.
+
+**For downstream consumers this only widens what is permitted.** MIT code can be
+used inside a GPL-3.0 or AGPL-3.0 project, so `ODE-artwork-downloader` (GPL-3.0)
+and `rusty-backup` (AGPL-3.0) need no change beyond the version bump.
+
+Two dependencies carry BSD-3-Clause attribution terms that a **binary**
+distribution must reproduce — `libchdman-rs` (which statically links MAME's
+BSD-3-Clause CHD core, © Aaron Giles) and `encoding_rs`. Using this crate as a
+library imposes no such duty.
+
+### Fixed — CUE sheets with unpadded track and index numbers are accepted
+
+`TRACK 1` / `INDEX 1` used to fail the whole sheet:
+
+```
+CUE error: Error(Msg("Expeceted number but found String(\"1\") instead"), …)
+```
+
+The CUE spec's examples zero-pad to two digits, but plenty of tools do not —
+including whoever mastered Microsoft Bookshelf, a retail CD-ROM. Padding is now
+the only difference between two otherwise identical sheets; nothing a caller
+sees changes.
+
+Pinned by `tests/fixtures/unpadded-track-number.cue`.
+
+### Fixed — audio-only discs open instead of being rejected
+
+A pure CD-DA disc has **no data track by definition**, so
+`DiscImageInfo::open` used to return `NoDataTrack` for one — leaving an audio CD
+indistinguishable from a corrupt image. It now opens and describes the disc:
+
+- `filesystem` is the new **`FilesystemType::None`** ("no filesystem, by
+  design"), distinct from `FilesystemType::Unknown` ("a data track is here but
+  its filesystem was not recognised"). Test for it with
+  `FilesystemType::is_none`.
+- `DiscImageInfo::is_audio_only()` answers the question directly.
+- The track list and — with the `toc` feature — the `DiscTOC` are populated, so
+  a MusicBrainz lookup works on a disc that previously would not open at all.
+
+Browsing such a disc still fails, because there is genuinely nothing to browse;
+the error now says so.
+
+Applies to BIN/CUE, CloneCD, and CHD. Audio-only CHDs already opened, but
+reported `FilesystemType::Unknown`; they now report `None` like the rest.
+
+Pinned by `tests/fixtures/cdda-no-data-track.cue`.
+
+### Added — `DiscImageInfo::tracks`
+
+```rust
+pub tracks: Vec<DiscTrack>,   // new field
+```
+
+Every track on the disc in track-number order, each with its number, sector
+format, absolute start LBA, length in sectors, and `start_msf()` /
+`duration_msf()` / `duration_seconds()` helpers. A caller can now report
+"1 data + 12 audio" rather than describing only the data track the filesystem
+came from — mixed-mode discs always opened, but their audio tracks were
+invisible.
+
+Populated for BIN/CUE, CloneCD and CHD. Empty for the containers with no track
+table (plain ISO, CSO, gzip, Nintendo, DVD CHDs) and, for now, for Nero,
+Alcohol, DiscJuggler and DAEMON Tools, whose parsers resolve each track's
+position within the *file* but not its address on the disc.
+
+### Changed — CUE parsing is now in-house
+
+`cue_sheet` is gone; `src/cue.rs` replaces it. The old parser's tokenizer only
+accepted exactly-two-digit numbers and exactly-eight-character timestamps, which
+is what made the unpadded-number bug unfixable from the outside — the crate was
+already rewriting sheet text before parsing to work around it, and that rewrite
+had defects of its own. Four real-world shapes now parse that did not:
+
+| Sheet | Was |
+|---|---|
+| `TRACK 1` / `INDEX 1` | `Expeceted number but found String("1")` |
+| `INDEX 01 0:00:00`, minutes past 99 | `Expected duration but found …` |
+| `REM GENRE Alternative Rock` | `Invalid command: "ROCK"` — a multi-word `REM` value was read as a remark plus a stray command, which broke ordinary Exact Audio Copy rips |
+| `FILE "MY BINARY DISC.bin"` | The pre-parse rewrite replaced `BINARY` everywhere including inside the filename, so the BIN was not found on case-sensitive filesystems |
+
+Also: `CATALOG` lines are parsed rather than stripped, unknown keywords are
+skipped instead of failing the sheet, and parse errors name the offending line
+number and quote it.
+
+Two corrections to track-format mapping came with it:
+
+- **`CDI/2336` now reads as Mode 2 Form 2** (2336-byte sectors, data at offset
+  8). It was previously read at 2352/24, which cannot have worked.
+- `MODE2/2048` and unlisted `MODEn/size` values keep their previous cooked-read
+  fallback rather than failing.
+
+Consumers upgrading from 0.14 need no code changes unless they construct a
+`DiscImageInfo` by struct literal or match `FilesystemType` exhaustively.
+
+**Licensing note:** `cue_sheet` was GPL-3.0 and was this crate's only
+copyleft-forcing dependency. Dropping it is what made the MIT relicense above
+possible.
+
+### Added — API summary
+
+- `FilesystemType::None`, `FilesystemType::is_none`
+- `DiscImageInfo::tracks`, `DiscImageInfo::is_audio_only`
+- `DiscTrack` (new `track` module, re-exported at the crate root)
+- `TrackType` re-exported at the crate root; `TrackType::is_audio`,
+  `TrackType::from_cue_label`
+- `bincue::TrackSpan`, `bincue::absolute_track_spans`, `bincue::disc_tracks`
+- `cue` module: `parse_cue`, `CueCommand`, `CueTime`
+
 ## 0.14.0
 
 ### Fixed — a non-CD CHD no longer aborts the process

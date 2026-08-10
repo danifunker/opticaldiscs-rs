@@ -15,9 +15,9 @@ use std::fs::{self, File};
 use std::io::{BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
 
-use cue_sheet::parser::{parse_cue, Command, TrackType as CueTrackType};
-
+use crate::cue::{parse_cue, CueCommand};
 use crate::error::{OpticaldiscsError, Result};
+use crate::track::DiscTrack;
 
 // ── Track type ────────────────────────────────────────────────────────────────
 
@@ -63,6 +63,11 @@ impl TrackType {
         !matches!(self, Self::Audio)
     }
 
+    /// True for Red Book audio tracks — the inverse of [`is_data`](Self::is_data).
+    pub fn is_audio(self) -> bool {
+        matches!(self, Self::Audio)
+    }
+
     /// CUE sheet format string for this track type (e.g. `"MODE1/2352"`).
     pub fn cue_label(self) -> &'static str {
         match self {
@@ -74,16 +79,34 @@ impl TrackType {
         }
     }
 
-    /// Map from `cue_sheet` crate's `TrackType` to ours.
-    fn from_cue(ct: &CueTrackType) -> Self {
-        match ct {
-            CueTrackType::Audio | CueTrackType::Cdg => Self::Audio,
-            CueTrackType::Mode(1, 2352) => Self::Mode1Raw,
-            CueTrackType::Mode(1, _) => Self::Mode1Cooked,
-            CueTrackType::Mode(2, 2336) => Self::Mode2Form2,
-            CueTrackType::Mode(2, _) => Self::Mode2Form1,
-            CueTrackType::Mode(_, _) => Self::Mode1Cooked, // fallback
-            CueTrackType::Cdi(_) => Self::Mode2Form1,
+    /// Parse a CUE sheet `TRACK` format string, case-insensitively.
+    ///
+    /// The inverse of [`cue_label`](Self::cue_label) for the formats that
+    /// round-trip exactly:
+    ///
+    /// ```
+    /// use opticaldiscs::bincue::TrackType;
+    ///
+    /// assert_eq!(TrackType::from_cue_label("mode1/2352"), Some(TrackType::Mode1Raw));
+    /// assert_eq!(TrackType::from_cue_label("AUDIO"), Some(TrackType::Audio));
+    /// assert_eq!(TrackType::from_cue_label("nonsense"), None);
+    /// ```
+    pub fn from_cue_label(label: &str) -> Option<Self> {
+        match label.to_ascii_uppercase().as_str() {
+            // CD+G hides its graphics in the subchannel; the main channel is
+            // ordinary 2352-byte audio, which is all this crate reads.
+            "AUDIO" | "CDG" => Some(Self::Audio),
+            "MODE1/2048" => Some(Self::Mode1Cooked),
+            "MODE1/2352" => Some(Self::Mode1Raw),
+            // Mode 2 stored in 2048-byte sectors is already cooked: the
+            // subheader is gone and user data starts at offset 0.
+            "MODE2/2048" => Some(Self::Mode1Cooked),
+            "MODE2/2336" | "CDI/2336" => Some(Self::Mode2Form2),
+            "MODE2/2352" | "CDI/2352" => Some(Self::Mode2Form1),
+            // Any other MODEn/size — MODE2/2324 is the only one seen in the
+            // wild — reads as cooked rather than failing the whole sheet.
+            other if other.starts_with("MODE") => Some(Self::Mode1Cooked),
+            _ => None,
         }
     }
 }
@@ -130,9 +153,7 @@ impl BinTrack {
 /// `tracks.iter().find(|t| t.is_data())` to get the first data track.
 pub fn parse_cue_tracks(cue_path: &Path) -> Result<Vec<BinTrack>> {
     let content = fs::read_to_string(cue_path).map_err(OpticaldiscsError::Io)?;
-    let normalized = normalize_cue_keywords(&content);
-
-    let commands = parse_cue(&normalized).map_err(|e| OpticaldiscsError::Cue(format!("{e:?}")))?;
+    let commands = parse_cue(&content)?;
 
     let cue_dir = cue_path.parent().unwrap_or(Path::new("."));
 
@@ -149,21 +170,25 @@ pub fn parse_cue_tracks(cue_path: &Path) -> Result<Vec<BinTrack>> {
 
     for cmd in &commands {
         match cmd {
-            Command::File(name, _fmt) => {
+            CueCommand::File { name, .. } => {
                 current_bin = Some(name.clone());
             }
-            Command::Track(no, ct) => {
+            CueCommand::Track { number, format } => {
+                let track_type = TrackType::from_cue_label(format).ok_or_else(|| {
+                    OpticaldiscsError::Cue(format!(
+                        "TRACK {number}: unknown track format {format:?}"
+                    ))
+                })?;
                 raw.push(RawTrack {
-                    track_no: *no,
-                    track_type: TrackType::from_cue(ct),
+                    track_no: *number,
+                    track_type,
                     bin_filename: current_bin.clone().unwrap_or_else(|| "unknown.bin".into()),
                     index_01_frames: 0,
                 });
             }
-            Command::Index(idx_no, msf) if *idx_no == 1 => {
+            CueCommand::Index { number: 1, time } => {
                 if let Some(t) = raw.last_mut() {
-                    t.index_01_frames =
-                        msf_to_frames(msf.minutes() as u8, msf.seconds() as u8, msf.frames() as u8);
+                    t.index_01_frames = time.to_frames();
                 }
             }
             _ => {}
@@ -319,27 +344,115 @@ pub fn frames_to_msf(frames: u64) -> (u8, u8, u8) {
     (mm, ss, ff)
 }
 
-/// Fix case-sensitivity and compatibility issues before handing to cue_sheet.
+// ── Absolute disc geometry ────────────────────────────────────────────────────
+
+/// Where one track sits on the disc, in absolute sectors.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TrackSpan {
+    /// Absolute start sector of the track's `INDEX 01`, counted from the start
+    /// of the disc (so track 1 of a normal disc is 0).
+    pub start_lba: u64,
+    /// Length of the track in sectors, measured `INDEX 01` to `INDEX 01` (or to
+    /// the end of the file for the last track in one).
+    ///
+    /// Where the next track has an in-file pregap — an `INDEX 00` before its
+    /// `INDEX 01` — that pregap counts toward this track rather than the next,
+    /// which is the same convention the TOC's track offsets use.
+    pub length_frames: u64,
+}
+
+/// Resolve each track's absolute position and length from a CUE/CCD track list.
 ///
-/// The `cue_sheet` crate requires `Binary` (not `BINARY`) and `Wave` (not
-/// `WAVE`).  It also chokes on `CATALOG` lines with leading zeros so we strip
-/// those.
-pub(crate) fn normalize_cue_keywords(content: &str) -> String {
-    let mut out = String::with_capacity(content.len());
-    for line in content.lines() {
-        let trimmed = line.trim();
-        // CATALOG lines cause parser issues; they are optional
-        if trimmed.starts_with("CATALOG") {
-            continue;
-        }
-        out.push_str(line);
-        out.push('\n');
+/// A [`BinTrack`]'s `file_byte_offset` is its `INDEX 01` *relative to its own
+/// BIN file*. For a single-BIN sheet every track shares one file, so those
+/// offsets are already absolute disc positions. For a multi-FILE sheet (one BIN
+/// per track, common in redump-style dumps) each offset is only the local pregap
+/// of that file, so a running frame total has to be carried across files to
+/// recover absolute, strictly-increasing positions.
+///
+/// Both layouts are handled uniformly by tracking the cumulative frame count of
+/// all *previous* files and adding each track's local offset on top. A track's
+/// length runs to the next track in the same file, or to the end of the file for
+/// the last one.
+///
+/// Returns the spans and the lead-out position (total frames across every file),
+/// or `None` if `tracks` is empty or a BIN file's size cannot be read.
+pub fn absolute_track_spans(tracks: &[BinTrack]) -> Option<(Vec<TrackSpan>, u64)> {
+    if tracks.is_empty() {
+        return None;
     }
-    out.replace("BINARY", "Binary")
-        .replace("MOTOROLA", "Motorola")
-        .replace(" WAVE", " Wave")
-        .replace(" MP3", " Mp3")
-        .replace(" AIFF", " Aiff")
+
+    // Absolute start of each track, and the absolute end of the file it lives in.
+    let mut starts: Vec<u64> = Vec::with_capacity(tracks.len());
+    let mut file_ends: Vec<u64> = Vec::with_capacity(tracks.len());
+
+    // Frames in all files seen *before* the current one.
+    let mut running_frames: u64 = 0;
+    // Frames in the file the current track belongs to.
+    let mut cur_file_frames: u64 = 0;
+    let mut prev_bin: Option<&Path> = None;
+
+    for t in tracks {
+        let sector_size = t.sector_size();
+
+        // When the BIN file changes, fold the previous file's full length into
+        // the running total and measure the new file. Single-BIN sheets take
+        // this branch exactly once (running_frames stays 0).
+        if prev_bin != Some(t.bin_path.as_path()) {
+            if prev_bin.is_some() {
+                running_frames += cur_file_frames;
+            }
+            let file_len = std::fs::metadata(&t.bin_path).ok()?.len();
+            cur_file_frames = file_len / sector_size;
+            prev_bin = Some(t.bin_path.as_path());
+        }
+
+        starts.push(running_frames + t.file_byte_offset / sector_size);
+        file_ends.push(running_frames + cur_file_frames);
+    }
+
+    let spans = starts
+        .iter()
+        .enumerate()
+        .map(|(i, &start)| {
+            // The next track bounds this one only when it is in the same file;
+            // across a file boundary the file's own end is the bound.
+            let end = match starts.get(i + 1) {
+                Some(&next) if tracks[i + 1].bin_path == tracks[i].bin_path => next,
+                _ => file_ends[i],
+            };
+            TrackSpan {
+                start_lba: start,
+                length_frames: end.saturating_sub(start),
+            }
+        })
+        .collect();
+
+    Some((spans, running_frames + cur_file_frames))
+}
+
+/// Describe a CUE/CCD track list as [`DiscTrack`]s for
+/// [`DiscImageInfo::tracks`](crate::detect::DiscImageInfo::tracks).
+///
+/// Falls back to per-file offsets with unknown lengths when a BIN file's size
+/// cannot be read, so a listing is still produced for a partially-present set of
+/// track files.
+pub fn disc_tracks(tracks: &[BinTrack]) -> Vec<DiscTrack> {
+    let spans = absolute_track_spans(tracks).map(|(spans, _lead_out)| spans);
+
+    tracks
+        .iter()
+        .enumerate()
+        .map(|(i, t)| {
+            let span = spans.as_ref().map(|s| s[i]);
+            DiscTrack {
+                number: t.track_no,
+                track_type: t.track_type,
+                start_lba: span.map_or(t.file_byte_offset / t.sector_size(), |s| s.start_lba),
+                length_sectors: span.map_or(0, |s| s.length_frames),
+            }
+        })
+        .collect()
 }
 
 /// Resolve the BIN file path referenced in a CUE sheet.
@@ -413,24 +526,47 @@ mod tests {
     }
 
     #[test]
-    fn track_type_from_cue() {
-        assert_eq!(TrackType::from_cue(&CueTrackType::Audio), TrackType::Audio);
-        assert_eq!(
-            TrackType::from_cue(&CueTrackType::Mode(1, 2352)),
-            TrackType::Mode1Raw
-        );
-        assert_eq!(
-            TrackType::from_cue(&CueTrackType::Mode(1, 2048)),
-            TrackType::Mode1Cooked
-        );
-        assert_eq!(
-            TrackType::from_cue(&CueTrackType::Mode(2, 2352)),
-            TrackType::Mode2Form1
-        );
-        assert_eq!(
-            TrackType::from_cue(&CueTrackType::Mode(2, 2336)),
-            TrackType::Mode2Form2
-        );
+    fn track_type_from_cue_label() {
+        let t = TrackType::from_cue_label;
+        assert_eq!(t("AUDIO"), Some(TrackType::Audio));
+        assert_eq!(t("CDG"), Some(TrackType::Audio));
+        assert_eq!(t("MODE1/2352"), Some(TrackType::Mode1Raw));
+        assert_eq!(t("MODE1/2048"), Some(TrackType::Mode1Cooked));
+        assert_eq!(t("MODE2/2352"), Some(TrackType::Mode2Form1));
+        assert_eq!(t("MODE2/2336"), Some(TrackType::Mode2Form2));
+        assert_eq!(t("MODE2/2048"), Some(TrackType::Mode1Cooked));
+        // A CD-i track's sector size decides its shape; both are Mode 2.
+        assert_eq!(t("CDI/2352"), Some(TrackType::Mode2Form1));
+        assert_eq!(t("CDI/2336"), Some(TrackType::Mode2Form2));
+        // Unlisted MODEn/size falls back rather than failing the sheet.
+        assert_eq!(t("MODE2/2324"), Some(TrackType::Mode1Cooked));
+        assert_eq!(t("nonsense"), None);
+    }
+
+    #[test]
+    fn every_cue_label_round_trips() {
+        for tt in [
+            TrackType::Audio,
+            TrackType::Mode1Raw,
+            TrackType::Mode1Cooked,
+            TrackType::Mode2Form1,
+            TrackType::Mode2Form2,
+        ] {
+            assert_eq!(TrackType::from_cue_label(tt.cue_label()), Some(tt));
+        }
+    }
+
+    #[test]
+    fn audio_and_data_are_complementary() {
+        for tt in [
+            TrackType::Audio,
+            TrackType::Mode1Raw,
+            TrackType::Mode1Cooked,
+            TrackType::Mode2Form1,
+            TrackType::Mode2Form2,
+        ] {
+            assert_ne!(tt.is_audio(), tt.is_data(), "{tt:?}");
+        }
     }
 
     #[test]
@@ -448,38 +584,28 @@ mod tests {
         assert_eq!(frames_to_msf(0), (0, 0, 0));
     }
 
-    #[test]
-    fn normalize_removes_catalog() {
-        let cue = "CATALOG 0000000000000\nFILE \"a.bin\" BINARY\n";
-        let n = normalize_cue_keywords(cue);
-        assert!(!n.contains("CATALOG"));
-        assert!(n.contains("FILE"));
-    }
-
-    #[test]
-    fn normalize_fixes_binary_case() {
-        let n = normalize_cue_keywords("FILE \"a.bin\" BINARY\n");
-        assert!(n.contains("Binary"));
-        assert!(!n.contains("BINARY"));
+    /// Write `cue_body` and a `sectors`-long dummy BIN into a fresh temp dir.
+    fn cue_with_bin(
+        bin_name: &str,
+        sectors: usize,
+        cue_body: &str,
+    ) -> (tempfile::TempDir, PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join(bin_name), vec![0u8; 2352 * sectors]).unwrap();
+        let cue_path = dir.path().join("disc.cue");
+        std::fs::write(&cue_path, cue_body).unwrap();
+        (dir, cue_path)
     }
 
     #[test]
     fn parse_single_bin_cue() {
-        use std::io::Write;
-        let dir = tempfile::tempdir().unwrap();
-
-        // Create a dummy BIN file (just needs to exist)
-        let bin_path = dir.path().join("disc.bin");
-        let cue_path = dir.path().join("disc.cue");
-        std::fs::write(&bin_path, vec![0u8; 2352 * 20]).unwrap();
-
-        let cue_content = format!(
+        let (_d, cue_path) = cue_with_bin(
+            "disc.bin",
+            20,
             "FILE \"disc.bin\" BINARY\n\
              TRACK 01 MODE1/2352\n\
-               INDEX 01 00:00:00\n"
+               INDEX 01 00:00:00\n",
         );
-        let mut f = File::create(&cue_path).unwrap();
-        f.write_all(cue_content.as_bytes()).unwrap();
 
         let tracks = parse_cue_tracks(&cue_path).unwrap();
         assert_eq!(tracks.len(), 1);
@@ -487,6 +613,62 @@ mod tests {
         assert_eq!(tracks[0].track_type, TrackType::Mode1Raw);
         assert_eq!(tracks[0].file_byte_offset, 0);
         assert!(tracks[0].is_data());
+    }
+
+    #[test]
+    fn unpadded_numbers_parse_identically() {
+        // Retail pressings ship sheets written this way (Microsoft Bookshelf).
+        let body = |track: &str, index: &str| {
+            format!("FILE \"disc.bin\" BINARY\n   TRACK {track} MODE1/2352\n   INDEX {index} 00:00:00\n")
+        };
+        let (_d1, padded) = cue_with_bin("disc.bin", 20, &body("01", "01"));
+        let (_d2, unpadded) = cue_with_bin("disc.bin", 20, &body("1", "1"));
+
+        let a = parse_cue_tracks(&padded).unwrap();
+        let b = parse_cue_tracks(&unpadded).unwrap();
+        assert_eq!(a.len(), 1);
+        assert_eq!(a[0].track_no, b[0].track_no);
+        assert_eq!(a[0].track_type, b[0].track_type);
+        assert_eq!(a[0].file_byte_offset, b[0].file_byte_offset);
+    }
+
+    #[test]
+    fn unpadded_msf_parses() {
+        let (_d, cue_path) = cue_with_bin(
+            "disc.bin",
+            5000,
+            "FILE \"disc.bin\" BINARY\nTRACK 1 AUDIO\nINDEX 1 1:0:0\n",
+        );
+        let tracks = parse_cue_tracks(&cue_path).unwrap();
+        assert_eq!(tracks[0].file_byte_offset, 4500 * 2352);
+    }
+
+    #[test]
+    fn catalog_and_cd_text_do_not_break_the_sheet() {
+        let (_d, cue_path) = cue_with_bin(
+            "disc.bin",
+            20,
+            "CATALOG 0000000000000\n\
+             REM GENRE Alternative Rock\n\
+             PERFORMER \"An Artist\"\n\
+             FILE \"disc.bin\" BINARY\n\
+             TRACK 01 MODE1/2352\n\
+               INDEX 01 00:00:00\n",
+        );
+        let tracks = parse_cue_tracks(&cue_path).unwrap();
+        assert_eq!(tracks.len(), 1);
+        assert_eq!(tracks[0].track_type, TrackType::Mode1Raw);
+    }
+
+    #[test]
+    fn unknown_track_format_is_reported() {
+        let (_d, cue_path) = cue_with_bin(
+            "disc.bin",
+            20,
+            "FILE \"disc.bin\" BINARY\nTRACK 01 SOMETHING\nINDEX 01 00:00:00\n",
+        );
+        let err = parse_cue_tracks(&cue_path).unwrap_err().to_string();
+        assert!(err.contains("SOMETHING"), "{err}");
     }
 
     #[test]
@@ -513,6 +695,94 @@ mod tests {
         assert!(!tracks[1].is_data());
         // Track 2 INDEX 01 = 01:00:00 = 75*60 = 4500 frames → 4500 * 2352 bytes
         assert_eq!(tracks[1].file_byte_offset, 4500 * 2352);
+    }
+
+    #[test]
+    fn spans_of_a_single_bin_chain_end_to_end() {
+        let (_d, cue_path) = cue_with_bin(
+            "disc.bin",
+            10_000,
+            "FILE \"disc.bin\" BINARY\n\
+             TRACK 01 MODE1/2352\n  INDEX 01 00:00:00\n\
+             TRACK 02 AUDIO\n  INDEX 01 01:00:00\n",
+        );
+        let tracks = parse_cue_tracks(&cue_path).unwrap();
+        let (spans, lead_out) = absolute_track_spans(&tracks).unwrap();
+
+        assert_eq!(spans[0].start_lba, 0);
+        assert_eq!(spans[0].length_frames, 4500);
+        assert_eq!(spans[1].start_lba, 4500);
+        // Track 2 runs to the end of the file.
+        assert_eq!(spans[1].length_frames, 10_000 - 4500);
+        assert_eq!(lead_out, 10_000);
+    }
+
+    #[test]
+    fn spans_accumulate_across_per_track_bins() {
+        let dir = tempfile::tempdir().unwrap();
+        let ss = TrackType::Audio.sector_size();
+        for (name, frames) in [("t1.bin", 200u64), ("t2.bin", 150), ("t3.bin", 100)] {
+            std::fs::write(dir.path().join(name), vec![0u8; (frames * ss) as usize]).unwrap();
+        }
+        let cue_path = dir.path().join("disc.cue");
+        std::fs::write(
+            &cue_path,
+            "FILE \"t1.bin\" BINARY\nTRACK 01 AUDIO\n  INDEX 01 00:00:00\n\
+             FILE \"t2.bin\" BINARY\nTRACK 02 AUDIO\n  INDEX 01 00:00:00\n\
+             FILE \"t3.bin\" BINARY\nTRACK 03 AUDIO\n  INDEX 01 00:00:00\n",
+        )
+        .unwrap();
+
+        let tracks = parse_cue_tracks(&cue_path).unwrap();
+        let (spans, lead_out) = absolute_track_spans(&tracks).unwrap();
+
+        // Each file's INDEX 01 restarts at zero, so positions must accumulate.
+        assert_eq!(
+            spans.iter().map(|s| s.start_lba).collect::<Vec<_>>(),
+            vec![0, 200, 350]
+        );
+        assert_eq!(
+            spans.iter().map(|s| s.length_frames).collect::<Vec<_>>(),
+            vec![200, 150, 100]
+        );
+        assert_eq!(lead_out, 450);
+    }
+
+    #[test]
+    fn disc_tracks_describe_a_mixed_mode_disc() {
+        let (_d, cue_path) = cue_with_bin(
+            "disc.bin",
+            10_000,
+            "FILE \"disc.bin\" BINARY\n\
+             TRACK 01 MODE1/2352\n  INDEX 01 00:00:00\n\
+             TRACK 02 AUDIO\n  INDEX 01 01:00:00\n",
+        );
+        let listed = disc_tracks(&parse_cue_tracks(&cue_path).unwrap());
+
+        assert_eq!(listed.len(), 2);
+        assert_eq!(listed[0].number, 1);
+        assert!(listed[0].is_data());
+        assert_eq!(listed[0].cue_label(), "MODE1/2352");
+        assert_eq!(listed[1].number, 2);
+        assert!(listed[1].is_audio());
+        assert_eq!(listed[1].start_msf(), (1, 0, 0));
+        assert_eq!(listed[1].duration_msf(), Some((1, 13, 25)));
+    }
+
+    #[test]
+    fn disc_tracks_survive_a_missing_bin_measurement() {
+        // A track list assembled by hand (no file on disk) still lists, with
+        // per-file offsets and unknown lengths rather than nothing at all.
+        let listed = disc_tracks(&[BinTrack {
+            track_no: 1,
+            track_type: TrackType::Audio,
+            bin_path: PathBuf::from("/nonexistent/audio.bin"),
+            file_byte_offset: 4500 * 2352,
+            frame_count: 0,
+        }]);
+        assert_eq!(listed[0].start_lba, 4500);
+        assert_eq!(listed[0].length_sectors, 0);
+        assert_eq!(listed[0].duration_msf(), None);
     }
 
     #[test]

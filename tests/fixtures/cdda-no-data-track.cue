@@ -1,0 +1,5 @@
+FILE "cdda-noaudiodata.bin" BINARY
+  TRACK 01 AUDIO
+    INDEX 01 00:00:00
+  TRACK 02 AUDIO
+    INDEX 01 00:05:25

@@ -75,7 +75,7 @@ CD (encrypted/custom — indefinite), Wii U.
 ## 3. The Nintendo key question — resolved: depend on `nod`
 
 **Decision: GameCube and Wii are handled by the [`nod`](https://github.com/encounter/nod)
-crate (dual MIT/Apache-2.0, GPL-3.0-compatible as a dependency).**
+crate (dual MIT/Apache-2.0, compatible with this crate's MIT license).**
 
 **Answer to "does the user need a key file?" → No.** The only secret required for Wii is
 the 16-byte **common key** (plus Korean + vWii variants). The per-disc *title keys* and
@@ -397,9 +397,9 @@ xboxdevwiki.net/XDVDFS.
 [dependencies]
 nod = "2"          # GameCube/Wii (+ RVZ/WBFS/CISO/GCZ/WIA/TGC/NFS); MIT OR Apache-2.0
 
-# already present: thiserror, log, cue_sheet, libchdman-rs
+# already present: thiserror, log, libchdman-rs
 ```
-- `nod` is compatible with the crate's GPL-3.0 license (permissive dep in a GPL project).
+- `nod` is permissive (MIT OR Apache-2.0), so it is compatible with this crate's MIT license.
 - Consider gating `nod` behind a default-on `nintendo` feature so downstreams that only care
   about CD consoles can opt out of the extra build weight — decide during Phase G2.
 
