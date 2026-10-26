@@ -3,6 +3,33 @@
 All notable changes to this crate are documented here. This project follows
 [Semantic Versioning](https://semver.org/).
 
+## 0.16.0
+
+A dependency bump: `libchdman-rs` moves from the 0.288 line to **0.289.3**. No
+opticaldiscs API changed, and nothing it uses from libchdman-rs changed either.
+
+### Changed — requires libchdman-rs 0.289.3 (breaking for co-dependents)
+
+`libchdman-rs` is a `links` crate, so a build graph can hold only **one** copy
+of it. If your crate depends on libchdman-rs directly as well as on opticaldiscs
+(with the `chd` feature, on by default), **bump your libchdman-rs pin to
+`0.289.3` (or a later 0.289.x) at the same time** as moving to opticaldiscs 0.16.
+A 0.288.x pin next to opticaldiscs 0.16 will not resolve.
+
+Crates that reach libchdman-rs only through opticaldiscs need no change beyond
+the version bump.
+
+### Note — CHD audio is not exposed through opticaldiscs (by design)
+
+libchdman-rs 0.289.3 adds `cd::CdAudioReader`, which streams the raw 2352-byte
+sectors of a CD CHD (including audio tracks). opticaldiscs does **not** wrap it.
+For BIN/CUE, opticaldiscs recognises audio tracks and audio-only discs and lists
+them, but it does not read audio samples. CHD already matches that through
+`ChdTrackType::Audio` and `ChdTrack::is_audio()`. `SectorReader` returns
+2048-byte user-data sectors, which is the wrong shape for 2352-byte audio. Audio
+playback belongs to consumers: use `libchdman_rs::cd::CdAudioReader` directly
+(with the pin above).
+
 ## 0.15.0
 
 Two CUE sheet defects found by opening real media, plus the track list that the

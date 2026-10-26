@@ -1,6 +1,6 @@
 [package]
 name = "opticaldiscs"
-version = "0.15.0"
+version = "0.16.0"
 edition = "2021"
 license = "MIT"
 description = "Format-agnostic optical disc image reading and filesystem browsing (ISO, BIN/CUE, CHD)"
@@ -40,7 +40,7 @@ thiserror = "2"
 log       = "0.4"
 
 # optional: only needed with feature "chd" (on by default)
-libchdman-rs = { version = "0.288.10", features = ["prebuilt"], optional = true }
+libchdman-rs = { version = "0.289.3", features = ["prebuilt"], optional = true }
 
 encoding_rs = "0.8"   # Shift-JIS (etc.) decoding for Japanese console headers
 flate2 = "1"          # deflate/gzip: PSP CSO blocks and gzip-compressed ISOs
