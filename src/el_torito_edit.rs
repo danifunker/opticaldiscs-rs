@@ -706,8 +706,8 @@ fn serialize_entry(slot: &Slot, is_section: bool) -> [u8; 32] {
 /// little-endian u16 words sum to zero. `v[28..30]` must be zero on entry.
 fn validation_checksum(v: &[u8; 32]) -> u16 {
     let mut sum: u16 = 0;
-    for w in v.chunks_exact(2) {
-        sum = sum.wrapping_add(u16::from_le_bytes([w[0], w[1]]));
+    for &w in v.as_chunks::<2>().0 {
+        sum = sum.wrapping_add(u16::from_le_bytes(w));
     }
     (0u16).wrapping_sub(sum)
 }

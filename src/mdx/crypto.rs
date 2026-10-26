@@ -97,7 +97,7 @@ fn aes_decrypt_block(cipher: &Aes256, block: &mut [u8]) {
 fn cbc_dewhiten(cipher: &Aes256, data: &mut [u8], iv: &[u8; 16]) {
     let iv1 = u64::from_le_bytes(iv[8..16].try_into().unwrap());
     let mut chain = [u64::from_le_bytes(iv[0..8].try_into().unwrap()), iv1];
-    for blk in data.chunks_exact_mut(16) {
+    for blk in data.as_chunks_mut::<16>().0 {
         // De-whitening with the upper half of the IV, before deciphering.
         let mut d0 = u64::from_le_bytes(blk[0..8].try_into().unwrap()) ^ iv1;
         let mut d1 = u64::from_le_bytes(blk[8..16].try_into().unwrap()) ^ iv1;
@@ -192,7 +192,7 @@ fn aes_encrypt_block(cipher: &Aes256, block: &mut [u8]) {
 fn cbc_dewhiten_encrypt(cipher: &Aes256, data: &mut [u8], iv: &[u8; 16]) {
     let iv1 = u64::from_le_bytes(iv[8..16].try_into().unwrap());
     let mut chain = [u64::from_le_bytes(iv[0..8].try_into().unwrap()), iv1];
-    for blk in data.chunks_exact_mut(16) {
+    for blk in data.as_chunks_mut::<16>().0 {
         let u0 = u64::from_le_bytes(blk[0..8].try_into().unwrap()) ^ chain[0];
         let u1 = u64::from_le_bytes(blk[8..16].try_into().unwrap()) ^ chain[1];
         blk[0..8].copy_from_slice(&u0.to_le_bytes());
