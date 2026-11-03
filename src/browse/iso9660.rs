@@ -30,6 +30,9 @@ pub struct Iso9660Filesystem {
     /// When set, the volume is High Sierra Format, whose directory records place
     /// the file-flags byte at offset 24 (ISO 9660 uses 25).
     high_sierra: bool,
+    /// Associated-file extents (`(lba, length)`) keyed by the path of the file
+    /// they belong to. Mac hybrid discs store a file's resource fork this way.
+    associated: std::collections::HashMap<String, (u32, u32)>,
 }
 
 impl Iso9660Filesystem {
@@ -89,6 +92,7 @@ impl Iso9660Filesystem {
             volume_id,
             joliet,
             high_sierra,
+            associated: std::collections::HashMap::new(),
         })
     }
 
@@ -115,6 +119,7 @@ impl Iso9660Filesystem {
     /// size from the disc.
     fn parse_directory(&mut self, data: &[u8], parent_path: &str) -> Vec<FileEntry> {
         let mut entries = Vec::new();
+        let mut associated: Vec<FileEntry> = Vec::new();
         let mut offset = 0usize;
 
         while offset < data.len() {
@@ -184,11 +189,31 @@ impl Iso9660Filesystem {
                         entry.symlink_target = Some(target);
                     }
 
-                    entries.push(entry);
+                    if rec.is_associated() && !rec.is_directory() {
+                        associated.push(entry);
+                    } else {
+                        entries.push(entry);
+                    }
                 }
             }
 
             offset += record_length;
+        }
+
+        // An associated file is the resource fork of the same-named file (ECMA-119
+        // §9.1.6 bit 2); one without a partner is listed as a plain file.
+        for fork in associated {
+            match entries
+                .iter_mut()
+                .find(|e| !e.is_directory() && e.path == fork.path)
+            {
+                Some(owner) => {
+                    owner.resource_fork_size = Some(fork.size);
+                    self.associated
+                        .insert(fork.path.clone(), (fork.location as u32, fork.size as u32));
+                }
+                None => entries.push(fork),
+            }
         }
 
         // Sort: directories first, then files; each group sorted by lowercase name.
@@ -267,18 +292,35 @@ impl Filesystem for Iso9660Filesystem {
 
     fn read_resource_fork(
         &mut self,
-        _entry: &FileEntry,
+        entry: &FileEntry,
     ) -> Result<Option<Vec<u8>>, FilesystemError> {
-        Ok(None)
+        match self.associated.get(&entry.path).copied() {
+            Some((lba, len)) => self
+                .reader
+                .read_bytes(lba as u64 * SECTOR_SIZE, len as usize)
+                .map(Some)
+                .map_err(sector_to_fs_err),
+            None => Ok(None),
+        }
     }
 
     fn read_resource_fork_range(
         &mut self,
-        _entry: &FileEntry,
-        _offset: u64,
-        _length: usize,
+        entry: &FileEntry,
+        offset: u64,
+        length: usize,
     ) -> Result<Option<Vec<u8>>, FilesystemError> {
-        Ok(None)
+        let Some((lba, len)) = self.associated.get(&entry.path).copied() else {
+            return Ok(None);
+        };
+        let n = length.min((len as u64).saturating_sub(offset) as usize);
+        if n == 0 {
+            return Ok(Some(Vec::new()));
+        }
+        self.reader
+            .read_bytes(lba as u64 * SECTOR_SIZE + offset, n)
+            .map(Some)
+            .map_err(sector_to_fs_err)
     }
 
     fn allocation_unit(&self) -> Option<u64> {
@@ -369,6 +411,11 @@ impl DirectoryRecord {
 
     fn is_directory(&self) -> bool {
         (self.file_flags & 0x02) != 0
+    }
+
+    /// True for an associated file (bit 2): a Mac resource fork on hybrid discs.
+    fn is_associated(&self) -> bool {
+        (self.file_flags & 0x04) != 0
     }
 
     /// True for the `.` (current directory) entry (identifier `\x00`).
@@ -835,6 +882,53 @@ mod tests {
         r[33..33 + id_len].copy_from_slice(id);
         r[su_start..su_start + system_use.len()].copy_from_slice(system_use);
         r
+    }
+
+    #[test]
+    fn associated_file_is_the_resource_fork_not_a_second_entry() {
+        const SEC: usize = SECTOR_SIZE as usize;
+        let mut img = vec![0u8; 23 * SEC];
+        img[16 * SEC..17 * SEC].copy_from_slice(&build_test_pvd_sector("HYBRID", 18, SEC as u32));
+        img[17 * SEC] = 0xFF;
+        img[17 * SEC + 1..17 * SEC + 6].copy_from_slice(b"CD001");
+
+        // Root: `.`, `..`, the fork (associated, flag 0x04) before its data file,
+        // and an orphan associated file with no partner.
+        let mut dir = Vec::new();
+        dir.extend(dir_record(18, SEC as u32, 0x02, &[0x00], None, &[]));
+        dir.extend(dir_record(18, SEC as u32, 0x02, &[0x01], None, &[]));
+        dir.extend(dir_record(20, 4, 0x04, b"APP;1", None, &[]));
+        dir.extend(dir_record(21, 3, 0x00, b"APP;1", None, &[]));
+        dir.extend(dir_record(22, 2, 0x04, b"LONE;1", None, &[]));
+        img[18 * SEC..18 * SEC + dir.len()].copy_from_slice(&dir);
+        img[20 * SEC..20 * SEC + 4].copy_from_slice(b"RSRC");
+        img[21 * SEC..21 * SEC + 3].copy_from_slice(b"dat");
+        img[22 * SEC..22 * SEC + 2].copy_from_slice(b"lo");
+
+        let mut fs = Iso9660Filesystem::new(Box::new(CursorReader(Cursor::new(img)))).unwrap();
+        let root = fs.root().unwrap();
+        let entries = fs.list_directory(&root).unwrap();
+        let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(
+            names,
+            ["APP", "LONE"],
+            "one row per file; the orphan stays listed"
+        );
+
+        let app = &entries[0];
+        assert_eq!(app.size, 3);
+        assert_eq!(app.resource_fork_size, Some(4));
+        assert_eq!(fs.read_file(app).unwrap(), b"dat");
+        assert_eq!(fs.read_resource_fork(app).unwrap().unwrap(), b"RSRC");
+        assert_eq!(
+            fs.read_resource_fork_range(app, 1, 10).unwrap().unwrap(),
+            b"SRC"
+        );
+
+        let lone = &entries[1];
+        assert_eq!(lone.resource_fork_size, None);
+        assert_eq!(fs.read_file(lone).unwrap(), b"lo");
+        assert_eq!(fs.read_resource_fork(lone).unwrap(), None);
     }
 
     #[test]

@@ -84,7 +84,8 @@ pub struct FileEntry {
     /// Child entries — populated only when this directory has been expanded.
     pub children: Option<Vec<FileEntry>>,
     /// Resource fork size in bytes. `None` for filesystems without resource
-    /// forks (ISO 9660), `Some(0)` for HFS/HFS+ files with no resource fork.
+    /// forks, and for ISO 9660 files with no associated file; `Some(0)` for
+    /// HFS/HFS+ files with no resource fork.
     pub resource_fork_size: Option<u64>,
     /// Raw 4-byte Mac Finder type code, exactly as stored on disk (e.g.
     /// `*b"TEXT"`). `None` for non-HFS filesystems. Storing the raw bytes —

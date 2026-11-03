@@ -48,7 +48,8 @@ pub trait Filesystem: Send {
     /// Read the entire resource fork of a file.
     ///
     /// Returns `Ok(None)` when the filesystem does not support resource forks
-    /// (ISO 9660) or when the file has no resource fork. HFS/HFS+ return
+    /// or when the file has no resource fork (an ISO 9660 file has one only
+    /// when the disc carries an associated file for it). HFS/HFS+ return
     /// `Ok(Some(vec![]))` for files whose resource fork exists but has zero
     /// length — callers can use `resource_fork_size` on [`FileEntry`] to
     /// decide whether calling this is worthwhile.

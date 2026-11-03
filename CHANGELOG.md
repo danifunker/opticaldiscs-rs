@@ -3,6 +3,18 @@
 All notable changes to this crate are documented here. This project follows
 [Semantic Versioning](https://semver.org/).
 
+## 0.16.1
+
+### Fixed — ISO 9660 associated files are resource forks, not second entries
+
+Mac hybrid discs store a file's resource fork on the ISO 9660 side as an
+**associated file** (file-flags bit 2, ECMA-119 §9.1.6) with the same name as
+the data file. `Iso9660Filesystem` listed it as an ordinary file, so every Mac
+file appeared twice. It now attaches the associated file to its partner:
+`FileEntry::resource_fork_size` is set and `read_resource_fork` /
+`read_resource_fork_range` return its bytes. An associated file with no partner
+is still listed as a plain file. No API changed.
+
 ## 0.16.0
 
 A dependency bump: `libchdman-rs` moves from the 0.288 line to **0.289.3**. No
