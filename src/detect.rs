@@ -1266,6 +1266,25 @@ mod tests {
     }
 
     #[test]
+    fn old_ts_partition_map_detects_hfs() {
+        // The Manhole CD: `ER` at block 0, the pre-1986 `TS` map at block 1
+        // naming one `TFS1` (HFS) partition at block 6.
+        let mut img = vec![0u8; 64 * SECTOR_SIZE as usize];
+        img[..2].copy_from_slice(b"ER");
+        img[512..514].copy_from_slice(b"TS");
+        img[514..518].copy_from_slice(&6u32.to_be_bytes());
+        img[518..522].copy_from_slice(&100u32.to_be_bytes());
+        img[522..526].copy_from_slice(b"TFS1");
+        write_mdb(&mut img, 6 * 512, "Manhole");
+        let mut reader = CursorReader(Cursor::new(img));
+        let (primary, _) = probe_filesystem(&mut reader).unwrap();
+        assert_eq!(primary, FilesystemType::Hfs);
+        let (mdb, _, label) = probe_hfs_detail(&mut reader, primary);
+        assert!(mdb.is_some());
+        assert_eq!(label.as_deref(), Some("Manhole"));
+    }
+
+    #[test]
     fn hybrid_hfs_detected_alongside_iso_primary() {
         // The Incredible Machine-style disc: ISO wins the primary probe, the
         // Apple_HFS partition surfaces in hybrid_filesystems. HFS at sub-block 8

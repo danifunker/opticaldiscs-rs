@@ -15,6 +15,18 @@ const APM_BLOCK_SIZE: u64 = 512;
 /// Partition Map entry signature: "PM".
 const PM_SIGNATURE: u16 = 0x504D;
 
+/// Driver Descriptor Map signature: "ER".
+const DDM_SIGNATURE: u16 = 0x4552;
+
+/// Old (pre-1986) partition map signature: "TS" (`pdSigWord` in Apple's SCSI.h).
+const TS_SIGNATURE: u16 = 0x5453;
+
+/// Bytes per old-map entry: `pdStart`, `pdSize`, `pdFSID`, each a big-endian u32.
+const TS_ENTRY_SIZE: usize = 12;
+
+/// File-system ID Apple's SCSI equates give HFS in the old map (`hfsID`).
+const TS_HFS_ID: &str = "TFS1";
+
 // ── Public types ──────────────────────────────────────────────────────────────
 
 /// A single Apple Partition Map (APM) partition entry.
@@ -40,8 +52,9 @@ impl PartitionEntry {
     ///
     /// Matches any `partition_type` that begins with `"Apple_HFS"`, which
     /// covers `"Apple_HFS"`, `"Apple_HFSX"`, and `"Apple_HFS+"`.
+    /// An old `TS` map names HFS by its file-system ID, `TFS1`.
     pub fn is_hfs(&self) -> bool {
-        self.partition_type.starts_with("Apple_HFS")
+        self.partition_type.starts_with("Apple_HFS") || self.partition_type == TS_HFS_ID
     }
 
     /// Parse a single 512-byte APM partition block.
@@ -92,14 +105,20 @@ impl PartitionEntry {
 ///
 /// # Errors
 ///
+/// The pre-1986 map (block 1 signature `TS`, behind an `ER` block 0) is read
+/// too; see [`parse_old_partition_map`].
+///
 /// Returns [`OpticaldiscsError::Parse`] if block 1 does not contain a valid
 /// PM entry, or [`OpticaldiscsError::Io`] on read failures.
 pub fn parse_partition_map(reader: &mut dyn SectorReader) -> Result<Vec<PartitionEntry>> {
     // Block 0: Driver Descriptor Map — advisory only, see fn doc.
-    let _ = reader.read_bytes(0, APM_BLOCK_SIZE as usize)?;
+    let ddm = reader.read_bytes(0, APM_BLOCK_SIZE as usize)?;
 
     // Block 1: first PM entry — tells us the total entry count.
     let first_pm = reader.read_bytes(APM_BLOCK_SIZE, APM_BLOCK_SIZE as usize)?;
+    if let Some(entries) = parse_old_partition_map(&ddm, &first_pm) {
+        return Ok(entries);
+    }
     let first = PartitionEntry::parse(&first_pm)
         .ok_or_else(|| OpticaldiscsError::Parse("APM block 1 is not a valid PM entry".into()))?;
     let total = first.map_entries;
@@ -115,6 +134,54 @@ pub fn parse_partition_map(reader: &mut dyn SectorReader) -> Result<Vec<Partitio
     }
 
     Ok(entries)
+}
+
+/// Parse the old Apple SCSI partition map (Inside Macintosh IV, SCSI Manager).
+///
+/// Block 1 holds the signature `TS` followed by 12-byte entries (`pdStart`,
+/// `pdSize`, `pdFSID`; starts and sizes in 512-byte blocks), ended by an
+/// all-zero entry or the end of the block. HD SC Setup wrote it until the `PM`
+/// map replaced it in 1986, and some early CD-ROMs carry it too. An `ER` block 0
+/// is required, since a bare two-byte `TS` is too weak a signature on its own.
+/// Entries come back with an empty `name` and the four-character ID (`TFS1`
+/// for HFS) as `partition_type`. Returns `None` when this is not an old map.
+pub fn parse_old_partition_map(block0: &[u8], block1: &[u8]) -> Option<Vec<PartitionEntry>> {
+    if block0.len() < 2 || block1.len() < 2 {
+        return None;
+    }
+    if u16::from_be_bytes([block0[0], block0[1]]) != DDM_SIGNATURE
+        || u16::from_be_bytes([block1[0], block1[1]]) != TS_SIGNATURE
+    {
+        return None;
+    }
+    let mut entries = Vec::new();
+    for raw in block1[2..].as_chunks::<TS_ENTRY_SIZE>().0 {
+        let start_block = u32::from_be_bytes([raw[0], raw[1], raw[2], raw[3]]);
+        let block_count = u32::from_be_bytes([raw[4], raw[5], raw[6], raw[7]]);
+        let fs_id = &raw[8..12];
+        if start_block == 0 && block_count == 0 && fs_id == [0u8; 4] {
+            break;
+        }
+        // A real entry sits past blocks 0 and 1 and has a size.
+        if start_block < 2 || block_count == 0 {
+            return None;
+        }
+        entries.push(PartitionEntry {
+            name: String::new(),
+            partition_type: c_str(fs_id),
+            start_block,
+            block_count,
+            map_entries: 0,
+        });
+    }
+    if entries.is_empty() {
+        return None;
+    }
+    let n = entries.len() as u32;
+    for e in &mut entries {
+        e.map_entries = n;
+    }
+    Some(entries)
 }
 
 /// Return the byte offset of the first HFS or HFS+ partition in `reader`.
@@ -316,6 +383,53 @@ mod tests {
         let offset = find_hfs_partition_offset(&mut reader).unwrap();
         // start_block 4 × 512 = 2048
         assert_eq!(offset, 4 * 512);
+    }
+
+    /// Block 0 `ER`, block 1 the old `TS` map: the layout of The Manhole CD.
+    fn make_ts_image(entries: &[(u32, u32, &[u8; 4])]) -> Vec<u8> {
+        let mut img = vec![0u8; 4 * SECTOR_SIZE as usize];
+        img[..512].copy_from_slice(&make_ddm());
+        img[512] = 0x54; // 'T'
+        img[513] = 0x53; // 'S'
+        for (i, &(start, size, id)) in entries.iter().enumerate() {
+            let o = 514 + i * TS_ENTRY_SIZE;
+            img[o..o + 4].copy_from_slice(&start.to_be_bytes());
+            img[o + 4..o + 8].copy_from_slice(&size.to_be_bytes());
+            img[o + 8..o + 12].copy_from_slice(id);
+        }
+        img
+    }
+
+    #[test]
+    fn old_ts_map_lists_its_entries() {
+        let img = make_ts_image(&[(6, 0x1ef3a, b"TFS1"), (0x1ef40, 100, b"XFS9")]);
+        let mut reader = CursorReader(Cursor::new(img));
+        let entries = parse_partition_map(&mut reader).unwrap();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].partition_type, "TFS1");
+        assert_eq!(entries[0].start_block, 6);
+        assert_eq!(entries[0].block_count, 0x1ef3a);
+        assert!(entries[0].is_hfs());
+        assert!(!entries[1].is_hfs());
+        assert_eq!(entries[1].map_entries, 2);
+    }
+
+    #[test]
+    fn old_ts_map_hfs_offset_is_start_times_512() {
+        let img = make_ts_image(&[(6, 0x1ef3a, b"TFS1")]);
+        let mut reader = CursorReader(Cursor::new(img));
+        assert_eq!(find_hfs_partition_offset(&mut reader).unwrap(), 6 * 512);
+    }
+
+    #[test]
+    fn old_ts_map_needs_er_block0_and_sane_entries() {
+        let mut no_ddm = make_ts_image(&[(6, 100, b"TFS1")]);
+        no_ddm[..2].copy_from_slice(&[0, 0]);
+        assert!(parse_partition_map(&mut CursorReader(Cursor::new(no_ddm))).is_err());
+        let empty = make_ts_image(&[]);
+        assert!(parse_partition_map(&mut CursorReader(Cursor::new(empty))).is_err());
+        let overlaps_map = make_ts_image(&[(1, 100, b"TFS1")]);
+        assert!(parse_partition_map(&mut CursorReader(Cursor::new(overlaps_map))).is_err());
     }
 
     #[test]

@@ -3,6 +3,23 @@
 All notable changes to this crate are documented here. This project follows
 [Semantic Versioning](https://semver.org/).
 
+## 0.16.2
+
+### Fixed — discs with the old Apple `TS` partition map open as HFS
+
+Before the `PM` Apple Partition Map arrived in 1986, Apple's SCSI disks used an
+older map: block 1 holds the signature `TS` (`pdSigWord` = `$5453` in Apple's
+`SCSI.h`) and a list of 12-byte entries (`pdStart`, `pdSize`, `pdFSID`, in
+512-byte blocks) ended by an all-zero entry, with HFS named `TFS1`. Some early
+CD-ROMs carry it (The Manhole), and so do disks formatted by early HD SC Setup.
+`apm::parse_partition_map` only knew the `PM` form, so such a disc fell through
+every probe and `open_disc_filesystem` failed with "Unsupported filesystem".
+
+`parse_partition_map` now reads the old map too, when block 0 holds an `ER`
+Driver Descriptor Map, and `PartitionEntry::is_hfs` accepts `TFS1`, so
+detection, browsing and hybrid discovery reach the HFS volume. The new
+`apm::parse_old_partition_map` exposes the parser on its own. No API changed.
+
 ## 0.16.1
 
 ### Fixed — ISO 9660 associated files are resource forks, not second entries
