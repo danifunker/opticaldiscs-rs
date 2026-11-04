@@ -15,6 +15,14 @@ const APM_BLOCK_SIZE: u64 = 512;
 /// Partition Map entry signature: "PM".
 const PM_SIGNATURE: u16 = 0x504D;
 
+/// Old-style (pre-1986) partition map signature: "TS". Block 1 holds this
+/// signature followed by 12-byte `(pdStart, pdSize, pdFSID)` entries, ended by
+/// an all-zero entry (Inside Macintosh: Devices, "Old partition map").
+const TS_SIGNATURE: u16 = 0x5453;
+
+/// `pdFSID` of an HFS partition in an old-style map.
+const TS_FSID_HFS: &[u8; 4] = b"TFS1";
+
 // ── Public types ──────────────────────────────────────────────────────────────
 
 /// A single Apple Partition Map (APM) partition entry.
@@ -100,6 +108,9 @@ pub fn parse_partition_map(reader: &mut dyn SectorReader) -> Result<Vec<Partitio
 
     // Block 1: first PM entry — tells us the total entry count.
     let first_pm = reader.read_bytes(APM_BLOCK_SIZE, APM_BLOCK_SIZE as usize)?;
+    if first_pm.len() >= 2 && u16::from_be_bytes([first_pm[0], first_pm[1]]) == TS_SIGNATURE {
+        return parse_old_ts_map(&first_pm);
+    }
     let first = PartitionEntry::parse(&first_pm)
         .ok_or_else(|| OpticaldiscsError::Parse("APM block 1 is not a valid PM entry".into()))?;
     let total = first.map_entries;
@@ -114,6 +125,45 @@ pub fn parse_partition_map(reader: &mut dyn SectorReader) -> Result<Vec<Partitio
         }
     }
 
+    Ok(entries)
+}
+
+/// Parse an old-style `TS` partition map block (the format of the earliest
+/// Apple SCSI disks and some 1980s CD-ROMs, such as *The Manhole*) into
+/// [`PartitionEntry`] values. An HFS partition (`pdFSID` `TFS1`) is reported as
+/// `Apple_HFS`; any other ID is kept as `TS:<id>` so it is listed but not
+/// mistaken for HFS.
+fn parse_old_ts_map(block: &[u8]) -> Result<Vec<PartitionEntry>> {
+    let mut entries = Vec::new();
+    for e in block.get(2..).unwrap_or_default().as_chunks::<12>().0 {
+        let start_block = u32::from_be_bytes([e[0], e[1], e[2], e[3]]);
+        let block_count = u32::from_be_bytes([e[4], e[5], e[6], e[7]]);
+        let fsid = &e[8..12];
+        if start_block == 0 && block_count == 0 && fsid == [0; 4] {
+            break;
+        }
+        let partition_type = if fsid == TS_FSID_HFS {
+            "Apple_HFS".to_string()
+        } else {
+            format!("TS:{}", c_str(fsid))
+        };
+        entries.push(PartitionEntry {
+            name: format!("TS map ({})", c_str(fsid)),
+            partition_type,
+            start_block,
+            block_count,
+            map_entries: 0,
+        });
+    }
+    if entries.is_empty() {
+        return Err(OpticaldiscsError::Parse(
+            "old-style TS partition map has no entries".into(),
+        ));
+    }
+    let count = entries.len() as u32;
+    for e in &mut entries {
+        e.map_entries = count;
+    }
     Ok(entries)
 }
 
@@ -304,6 +354,51 @@ mod tests {
         assert_eq!(entries.len(), 2);
         assert_eq!(entries[1].partition_type, "Apple_HFS");
         assert_eq!(entries[1].start_block, 8);
+    }
+
+    /// Block 1 of *The Manhole* (1988 CD-ROM): a DDM at block 0, then an
+    /// old-style `TS` map with one HFS (`TFS1`) partition at block 6.
+    fn make_ts_image() -> Vec<u8> {
+        let mut img = vec![0u8; 4 * SECTOR_SIZE as usize];
+        img[..512].copy_from_slice(&make_ddm());
+        img[512..526].copy_from_slice(&[
+            0x54, 0x53, 0x00, 0x00, 0x00, 0x06, 0x00, 0x01, 0xef, 0x3a, b'T', b'F', b'S', b'1',
+        ]);
+        img
+    }
+
+    #[test]
+    fn parse_partition_map_old_ts_map() {
+        let mut reader = CursorReader(Cursor::new(make_ts_image()));
+        let entries = parse_partition_map(&mut reader).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert!(entries[0].is_hfs());
+        assert_eq!(entries[0].start_block, 6);
+        assert_eq!(entries[0].block_count, 0x1ef3a);
+    }
+
+    #[test]
+    fn find_hfs_partition_offset_old_ts_map() {
+        let mut reader = CursorReader(Cursor::new(make_ts_image()));
+        assert_eq!(find_hfs_partition_offset(&mut reader).unwrap(), 6 * 512);
+    }
+
+    #[test]
+    fn old_ts_map_non_hfs_entry_is_not_hfs() {
+        let mut img = make_ts_image();
+        img[522..526].copy_from_slice(b"MFS1");
+        let mut reader = CursorReader(Cursor::new(img));
+        let entries = parse_partition_map(&mut reader).unwrap();
+        assert_eq!(entries[0].partition_type, "TS:MFS1");
+        assert!(!entries[0].is_hfs());
+    }
+
+    #[test]
+    fn empty_old_ts_map_fails() {
+        let mut img = make_ts_image();
+        img[514..526].fill(0);
+        let mut reader = CursorReader(Cursor::new(img));
+        assert!(parse_partition_map(&mut reader).is_err());
     }
 
     #[test]
