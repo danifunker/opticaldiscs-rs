@@ -21,6 +21,10 @@ on:
         description: 'Validate against crates.io (cargo publish --dry-run); no tag, no publish'
         type: boolean
         default: false
+      skip_macos:
+        description: 'Skip the macOS build gate (only after testing on a Mac by hand)'
+        type: boolean
+        default: false
 
 permissions:
   contents: write   # needed to create the tag + release
@@ -30,6 +34,8 @@ jobs:
   build:
     name: Build gate
     uses: ./.github/workflows/ci.yml
+    with:
+      skip_macos: ${{ inputs.skip_macos }}
 
   # Stage 2 — derive the tag from Cargo.toml and verify the packaged crate is
   # slim. Skipped in build_only mode.

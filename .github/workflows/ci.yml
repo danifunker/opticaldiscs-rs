@@ -8,6 +8,11 @@ on:
     branches: ['**']
   pull_request:
   workflow_call:
+    inputs:
+      skip_macos:
+        description: 'Leave macOS out of the test matrix (runner outage; test it by hand)'
+        type: boolean
+        default: false
 
 env:
   CARGO_TERM_COLOR: always
@@ -19,7 +24,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: ${{ fromJSON(inputs.skip_macos && '["ubuntu-latest","windows-latest"]' || '["ubuntu-latest","macos-latest","windows-latest"]') }}
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
