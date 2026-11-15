@@ -103,10 +103,8 @@ impl CsoSectorReader {
             .map_err(OpticaldiscsError::Io)?;
         file.read_exact(&mut raw).map_err(OpticaldiscsError::Io)?;
         let index: Vec<u32> = raw
-            .as_chunks::<4>()
-            .0
-            .iter()
-            .map(|&c| u32::from_le_bytes(c))
+            .chunks_exact(4)
+            .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
             .collect();
 
         Ok(Self {

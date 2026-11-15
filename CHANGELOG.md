@@ -3,6 +3,20 @@
 All notable changes to this crate are documented here. This project follows
 [Semantic Versioning](https://semver.org/).
 
+## 0.16.3
+
+### Fixed — builds on Rust 1.73 (the macOS 10.7 toolchain)
+
+Rusty Backup's 10.7 app builds this crate with Rust 1.73. The crate used
+`as_chunks` / `as_chunks_mut`, `io::Error::other`, `Option::is_none_or` and
+`is_multiple_of`, all newer than 1.73; they are now `chunks_exact`,
+`io::Error::new`, `map_or` and `%`, with the same results (a short remainder is
+dropped as before). `clippy.toml` sets `msrv = "1.73"` so lints don't suggest the
+newer forms again, and a CI job (`rust-1-73`) builds `ci/rust-1.73` (`drives` +
+`chd`) on 1.73 for a 10.7 target. `libchdman-rs` is now 0.289.6, the first that
+builds on 1.73. The `toc` and `mdx` features still need a newer toolchain
+(`sha1` 0.11 is edition 2024).
+
 ## 0.16.2
 
 ### Fixed — discs with the old Apple `TS` partition map open as HFS

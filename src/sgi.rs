@@ -275,8 +275,8 @@ impl SgiVolumeHeader {
 /// their two's-complement sum must be zero.
 fn volume_checksum_zero(buf: &[u8]) -> bool {
     let mut sum: u32 = 0;
-    for &chunk in buf[..SGI_VOLHDR_SIZE].as_chunks::<4>().0 {
-        sum = sum.wrapping_add(u32::from_be_bytes(chunk));
+    for chunk in buf[..SGI_VOLHDR_SIZE].chunks_exact(4) {
+        sum = sum.wrapping_add(u32::from_be_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]));
     }
     sum == 0
 }

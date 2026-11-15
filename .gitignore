@@ -24,3 +24,6 @@ Cargo.lock
 #.idea/
 ._*
 .DS_Store
+/ci/rust-1.73/target
+# The Rust 1.73 CI consumer builds --locked from its own lockfile.
+!/ci/rust-1.73/Cargo.lock

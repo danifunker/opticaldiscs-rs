@@ -217,7 +217,7 @@ impl UfsFilesystem {
                 if magic == MAGIC_UFS1 {
                     let base = off - SB_OFFSET_UFS1;
                     let count = root_entry_count(reader, base, &sb, be);
-                    if count > 0 && best.as_ref().is_none_or(|b| count > b.3) {
+                    if count > 0 && best.as_ref().map_or(true, |b| count > b.3) {
                         best = Some((sb, be, base, count));
                     }
                 }
