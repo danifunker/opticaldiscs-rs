@@ -261,6 +261,6 @@ fn be32(b: &[u8], o: usize) -> u32 {
 fn io_of(e: crate::error::OpticaldiscsError) -> std::io::Error {
     match e {
         crate::error::OpticaldiscsError::Io(io) => io,
-        other => std::io::Error::other(other.to_string()),
+        other => std::io::Error::new(std::io::ErrorKind::Other, other.to_string()),
     }
 }

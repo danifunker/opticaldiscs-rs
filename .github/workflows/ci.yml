@@ -85,3 +85,23 @@ jobs:
           prefix-key: v1-rust-0.3
       - name: Check docs
         run: cargo doc --all-features --no-deps
+
+  # Rust 1.73 is the last toolchain that targets macOS 10.7, and Rusty Backup's 10.7 app builds this
+  # crate with it. ci/rust-1.73 is that consumer (drives + chd), its lockfile resolved for 1.73.
+  rust-1-73:
+    name: Rust 1.73 build (macOS 10.7 target)
+    runs-on: macos-latest
+    env:
+      LIBCHDMAN_FORCE_SOURCE: '1'
+      LIBCHDMAN_CPU: portable
+      MACOSX_DEPLOYMENT_TARGET: '10.7'
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.73.0
+          targets: x86_64-apple-darwin
+      # nod declares Rust 1.74 but builds on 1.73 with the zerocopy the lockfile pins.
+      - name: Build
+        working-directory: ci/rust-1.73
+        run: cargo build --release --target x86_64-apple-darwin --locked --ignore-rust-version

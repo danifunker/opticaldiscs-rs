@@ -24,3 +24,4 @@ Cargo.lock
 #.idea/
 ._*
 .DS_Store
+/ci/rust-1.73/target

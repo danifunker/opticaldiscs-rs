@@ -155,7 +155,7 @@ pub fn parse_old_partition_map(block0: &[u8], block1: &[u8]) -> Option<Vec<Parti
         return None;
     }
     let mut entries = Vec::new();
-    for raw in block1[2..].as_chunks::<TS_ENTRY_SIZE>().0 {
+    for raw in block1[2..].chunks_exact(TS_ENTRY_SIZE) {
         let start_block = u32::from_be_bytes([raw[0], raw[1], raw[2], raw[3]]);
         let block_count = u32::from_be_bytes([raw[4], raw[5], raw[6], raw[7]]);
         let fs_id = &raw[8..12];

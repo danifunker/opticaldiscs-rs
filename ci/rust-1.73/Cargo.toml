@@ -1,0 +1,14 @@
+# Builds opticaldiscs on Rust 1.73 for a macOS 10.7 target, as Rusty Backup's 10.7 app uses it
+# (`ci.yml`, job rust-1-73). Its own workspace; the lockfile is resolved for 1.73 and pins
+# zerocopy 0.8.5, the last whose derive output nod's types compile with on 1.73.
+[package]
+name = "opticaldiscs-rust-1-73"
+version = "0.0.0"
+edition = "2021"
+rust-version = "1.73"
+publish = false
+
+[dependencies]
+opticaldiscs = { path = "../..", default-features = false, features = ["drives", "chd"] }
+
+[workspace]

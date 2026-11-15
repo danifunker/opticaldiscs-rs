@@ -373,10 +373,8 @@ const SVD_TYPE: u8 = 0x02;
 /// sequences become U+FFFD.
 pub(crate) fn decode_utf16be(bytes: &[u8]) -> String {
     let units: Vec<u16> = bytes
-        .as_chunks::<2>()
-        .0
-        .iter()
-        .map(|&c| u16::from_be_bytes(c))
+        .chunks_exact(2)
+        .map(|c| u16::from_be_bytes([c[0], c[1]]))
         .collect();
     String::from_utf16_lossy(&units)
 }
